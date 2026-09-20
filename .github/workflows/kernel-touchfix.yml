@@ -169,7 +169,7 @@ jobs:
 
           common = "drivers/input/touchscreen/HS03/jdchipset/jadard_common.c"
 
-          watchdog = r'''\
+          watchdog = r'''
           static void jadard_health_work_function(struct work_struct *work)
           {
               struct jadard_ts_data *ts =
@@ -392,7 +392,7 @@ jobs:
           export BSP_BUILD_ANDROID_OS=y
 
           make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
-            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- -j"$(nproc)"
+            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- -j2
 
           test -s out/arch/arm64/boot/Image
           ls -lh out/arch/arm64/boot/Image
