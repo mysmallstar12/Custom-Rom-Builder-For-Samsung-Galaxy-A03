@@ -356,7 +356,7 @@ jobs:
           clang --version
           ld.lld --version
 
-          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
+          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld LLVM_IAS=1 \
             ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- a03_cis_open_defconfig
 
           ./scripts/config --file out/.config \
@@ -366,7 +366,7 @@ jobs:
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e KSU_KPROBES_HOOK
 
-          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
+          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld LLVM_IAS=1 \
             ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig
 
           grep -q '^CONFIG_KSU=y$' out/.config
@@ -391,7 +391,7 @@ jobs:
           export DTC_OVERLAY_VTS_EXT="$PWD/tools/mkdtimg/ufdt_verify_overlay_host"
           export BSP_BUILD_ANDROID_OS=y
 
-          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
+          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld LLVM_IAS=1 \
             ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- -j2
 
           test -s out/arch/arm64/boot/Image
