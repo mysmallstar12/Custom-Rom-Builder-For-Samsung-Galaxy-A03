@@ -37,6 +37,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             git curl ca-certificates bc bison flex build-essential \
             libssl-dev libelf-dev libncurses-dev libyaml-dev pkg-config python3 cpio \
+            libc++1 libc++-dev libc++abi1 libc++abi-dev \
             p7zip-full xz-utils zstd rsync lz4
           sudo apt-get install -y --no-install-recommends libtinfo5 || true
 
@@ -392,7 +393,7 @@ jobs:
           export BSP_BUILD_ANDROID_OS=y
 
           make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld LLVM_IAS=1 \
-            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- -j2
+            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- -j4
 
           test -s out/arch/arm64/boot/Image
           ls -lh out/arch/arm64/boot/Image
