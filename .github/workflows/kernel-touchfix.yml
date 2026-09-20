@@ -1,0 +1,498 @@
+name: Build A03 Jadard Touchfix Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/kernel-touchfix.yml'
+
+permissions:
+  contents: read
+
+env:
+  IVER_REPO: IverCoder/android_kernel_samsung_a03
+  IVER_TAG: 4.14.199-202508171328
+  IVER_COMMIT: b48e9ddfd73a361f1a4a7c5bfe6a66fd54a00287
+  IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
+  IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
+  KSU_TAG: v1.0.9
+  OUT_NAME: A03-touchfix-v2-Jadard-KSUNext
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Install host packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git curl ca-certificates bc bison flex build-essential \
+            libssl-dev libelf-dev libncurses-dev libyaml-dev pkg-config python3 cpio \
+            p7zip-full xz-utils zstd rsync lz4
+          sudo apt-get install -y --no-install-recommends libtinfo5 || true
+
+      - name: Fetch exact IverCoder kernel source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init kernel
+          cd kernel
+          git remote add origin "https://github.com/${IVER_REPO}.git"
+          git fetch --depth=1 origin "refs/tags/${IVER_TAG}:refs/tags/${IVER_TAG}"
+          git checkout --detach "${IVER_TAG}"
+          test "$(git rev-parse HEAD)" = "${IVER_COMMIT}"
+          echo "Kernel source: $(git rev-parse HEAD)"
+
+      - name: Fetch exact Android build toolchains
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+
+          CLANG_DIR="$PWD/toolchain/clang/host/linux-x86/clang-r383902"
+          GCC_DIR="$PWD/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+
+          mkdir -p "$CLANG_DIR" "$GCC_DIR"
+
+          curl -L --fail --retry 5 --retry-delay 2 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-11.0.0_r3/clang-r383902.tar.gz" \
+            | tar -xz -C "$CLANG_DIR"
+
+          curl -L --fail --retry 5 --retry-delay 2 \
+            "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-11.0.0_r3.tar.gz" \
+            | tar -xz -C "$GCC_DIR"
+
+          test -x "$CLANG_DIR/bin/clang"
+          test -x "$CLANG_DIR/bin/ld.lld"
+          test -x "$GCC_DIR/bin/aarch64-linux-android-as"
+          test -x "$GCC_DIR/bin/aarch64-linux-android-objcopy"
+
+          "$CLANG_DIR/bin/clang" --version
+          "$CLANG_DIR/bin/ld.lld" --version
+          "$GCC_DIR/bin/aarch64-linux-android-as" --version | head -n 1
+
+      - name: Apply Jadard JD9365T recovery patch and DTC fix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              if old not in s:
+                  raise SystemExit(f"pattern not found in {path}: {old[:100]!r}")
+              if s.count(old) != 1:
+                  raise SystemExit(f"pattern count != 1 in {path}: {s.count(old)}")
+              p.write_text(s.replace(old, new, 1))
+
+          replace_once(
+              "scripts/dtc/Makefile",
+              "HOSTLDLIBS_dtc\\t:= -lyaml",
+              "HOSTLOADLIBES_dtc\\t:= -lyaml",
+          )
+
+          replace_once(
+              "drivers/input/touchscreen/HS03/jdchipset/jadard_module.h",
+              "\\tvoid (*fp_log_touch_state)(void);\\n",
+              "\\tvoid (*fp_log_touch_state)(void);\\n"
+              "\\tbool (*fp_health_check)(void);\\n",
+          )
+
+          replace_once(
+              "drivers/input/touchscreen/HS03/jdchipset/jadard_module.c",
+              "\\tg_module_fp.fp_log_touch_state       = jadard_mcu_log_touch_state;\\n",
+              "\\tg_module_fp.fp_log_touch_state       = jadard_mcu_log_touch_state;\\n"
+              "\\tg_module_fp.fp_health_check          = NULL;\\n",
+          )
+
+          replace_once(
+              "drivers/input/touchscreen/HS03/jdchipset/jadard_common.h",
+              "#define JD_READ_LEN_OVERFLOW     (1)\\n",
+              "#define JD_READ_LEN_OVERFLOW     (1)\\n"
+              "#define JD_HEALTH_CHECK_INTERVAL_MS (5000)\\n"
+              "#define JD_HEALTH_CHECK_FAIL_LIMIT  (2)\\n",
+          )
+          replace_once(
+              "drivers/input/touchscreen/HS03/jdchipset/jadard_common.h",
+              "\\tstruct workqueue_struct *jadard_diag_wq;\\n"
+              "\\tstruct delayed_work jadard_diag_delay_wrok;\\n",
+              "\\tstruct workqueue_struct *jadard_diag_wq;\\n"
+              "\\tstruct delayed_work jadard_diag_delay_wrok;\\n"
+              "\\n"
+              "\\tstruct workqueue_struct *jadard_health_wq;\\n"
+              "\\tstruct delayed_work jadard_health_work;\\n"
+              "\\tuint8_t health_fail_count;\\n",
+          )
+
+          jd = "drivers/input/touchscreen/HS03/jdchipset/jadard_ic_JD9365T.c"
+          replace_once(
+              jd,
+              "static void module_jd9365t_set_high_sensitivity(bool enable)\\n",
+              "static bool module_jd9365t_health_check(void)\\n"
+              "{\\n"
+              "\\tuint8_t rdata[JD_FOUR_SIZE] = {0};\\n"
+              "\\tint ret;\\n"
+              "\\n"
+              "\\tret = module_jd9365t_register_read(\\n"
+              "\\t\\tg_jd9365t_chip_info.dsram_host_addr.fw_version,\\n"
+              "\\t\\trdata, sizeof(rdata));\\n"
+              "\\n"
+              "\\treturn ret >= 0;\\n"
+              "}\\n"
+              "\\n"
+              "static void module_jd9365t_set_high_sensitivity(bool enable)\\n",
+          )
+          replace_once(
+              jd,
+              "\\tg_module_fp.fp_get_touch_data       = module_jd9365t_get_touch_data;\\n",
+              "\\tg_module_fp.fp_get_touch_data       = module_jd9365t_get_touch_data;\\n"
+              "\\tg_module_fp.fp_health_check         = module_jd9365t_health_check;\\n",
+          )
+
+          common = "drivers/input/touchscreen/HS03/jdchipset/jadard_common.c"
+
+          watchdog = r'''
+          static void jadard_health_work_function(struct work_struct *work)
+          {
+              struct jadard_ts_data *ts =
+                  container_of(to_delayed_work(work), struct jadard_ts_data,
+                               jadard_health_work);
+              bool ok = true;
+
+              if (ts->suspended || !ts->tp_on_off)
+                  goto requeue;
+
+              if (g_module_fp.fp_health_check != NULL)
+                  ok = g_module_fp.fp_health_check();
+
+              if (ok) {
+                  ts->health_fail_count = 0;
+                  goto requeue;
+              }
+
+              ts->health_fail_count++;
+              JD_W("%s: health check failed (%u/%u)\n", __func__,
+                   ts->health_fail_count, JD_HEALTH_CHECK_FAIL_LIMIT);
+
+              if (ts->health_fail_count < JD_HEALTH_CHECK_FAIL_LIMIT)
+                  goto requeue;
+
+              JD_W("%s: touch controller unresponsive, starting recovery\n", __func__);
+              ts->health_fail_count = 0;
+
+              jadard_int_enable(false);
+
+          #ifdef JD_RST_PIN_FUNC
+              if (g_module_fp.fp_ic_reset != NULL)
+                  g_module_fp.fp_ic_reset(false, false);
+          #endif
+
+          #ifdef JD_ZERO_FLASH
+              if (g_module_fp.fp_0f_upgrade_fw != NULL) {
+                  if (g_module_fp.fp_0f_upgrade_fw(jd_i_CTPM_firmware_name) < 0)
+                      JD_E("%s: zero-flash firmware reload failed\n", __func__);
+              }
+          #endif
+
+              jadard_report_all_leave_event(ts);
+
+          #if defined(JD_SMART_WAKEUP) || defined(JD_USB_DETECT_GLOBAL) || \
+              defined(JD_HIGH_SENSITIVITY) || defined(JD_EARPHONE_DETECT)
+              if (g_module_fp.fp_resume_set_func != NULL)
+                  g_module_fp.fp_resume_set_func(false);
+          #endif
+
+              jadard_int_enable(true);
+              JD_I("%s: recovery complete\n", __func__);
+
+          requeue:
+              if (!ts->suspended && ts->jadard_health_wq != NULL)
+                  queue_delayed_work(ts->jadard_health_wq, &ts->jadard_health_work,
+                                     msecs_to_jiffies(JD_HEALTH_CHECK_INTERVAL_MS));
+          }
+
+          '''
+          replace_once(
+              common,
+              "void jadard_ts_work(struct jadard_ts_data *ts)\\n",
+              watchdog + "void jadard_ts_work(struct jadard_ts_data *ts)\\n",
+          )
+
+          replace_once(
+              common,
+              "    tp_is_used = JDCHIPSET;\\n"
+              "    /* HS03 code for SL6215DEV-100 by yuanliding at 20210813 end */\\n"
+              "\\n"
+              "    return 0;\\n",
+              "    tp_is_used = JDCHIPSET;\\n"
+              "    /* HS03 code for SL6215DEV-100 by yuanliding at 20210813 end */\\n"
+              "\\n"
+              "    ts->health_fail_count = 0;\\n"
+              "    ts->jadard_health_wq = create_singlethread_workqueue(\\\"jadard_health_wq\\\");\\n"
+              "    if (ts->jadard_health_wq != NULL) {\\n"
+              "        INIT_DELAYED_WORK(&ts->jadard_health_work, jadard_health_work_function);\\n"
+              "        queue_delayed_work(ts->jadard_health_wq, &ts->jadard_health_work,\\n"
+              "                           msecs_to_jiffies(15000));\\n"
+              "        JD_I(\\\"Jadard health watchdog enabled\\\\n\\\");\\n"
+              "    } else {\\n"
+              "        JD_W(\\\"Unable to create Jadard health watchdog workqueue\\\\n\\\");\\n"
+              "    }\\n"
+              "\\n"
+              "    return 0;\\n",
+          )
+
+          replace_once(
+              common,
+              "void jadard_chip_common_deinit(void)\\n"
+              "{\\n"
+              "    struct jadard_ts_data *ts = pjadard_ts_data;\\n",
+              "void jadard_chip_common_deinit(void)\\n"
+              "{\\n"
+              "    struct jadard_ts_data *ts = pjadard_ts_data;\\n"
+              "\\n"
+              "    if (ts->jadard_health_wq != NULL) {\\n"
+              "        cancel_delayed_work_sync(&ts->jadard_health_work);\\n"
+              "        destroy_workqueue(ts->jadard_health_wq);\\n"
+              "        ts->jadard_health_wq = NULL;\\n"
+              "    }\\n",
+          )
+
+          replace_once(
+              common,
+              "        JD_I(\\\"%s: enter\\\\n\\\", __func__);\\n"
+              "        ts->suspended = true;\\n"
+              "    }\\n"
+              "/*HS03_S code for SL6215SDEV-359 by duanyaoming at 202205011 start*/\\n",
+              "        JD_I(\\\"%s: enter\\\\n\\\", __func__);\\n"
+              "        ts->suspended = true;\\n"
+              "    }\\n"
+              "\\n"
+              "    if (ts->jadard_health_wq != NULL)\\n"
+              "        cancel_delayed_work_sync(&ts->jadard_health_work);\\n"
+              "    ts->health_fail_count = 0;\\n"
+              "/*HS03_S code for SL6215SDEV-359 by duanyaoming at 202205011 start*/\\n",
+          )
+
+          replace_once(
+              common,
+              "    jadard_int_enable(true);\\n"
+              "\\n"
+              "    JD_I(\\\"%s: end \\\\n\\\", __func__);\\n"
+              "    return 0;\\n"
+              "}\\n",
+              "    jadard_int_enable(true);\\n"
+              "\\n"
+              "    ts->health_fail_count = 0;\\n"
+              "    if (ts->jadard_health_wq != NULL)\\n"
+              "        queue_delayed_work(ts->jadard_health_wq, &ts->jadard_health_work,\\n"
+              "                           msecs_to_jiffies(JD_HEALTH_CHECK_INTERVAL_MS));\\n"
+              "\\n"
+              "    JD_I(\\\"%s: end \\\\n\\\", __func__);\\n"
+              "    return 0;\\n"
+              "}\\n",
+          )
+          PY
+
+          echo 'DTC compatibility fix:'
+          grep -n 'HOSTLOADLIBES_dtc.*-lyaml' scripts/dtc/Makefile
+
+          echo 'Jadard watchdog patch:'
+          grep -n 'JD_HEALTH_CHECK' drivers/input/touchscreen/HS03/jdchipset/jadard_common.h
+          grep -n 'fp_health_check' drivers/input/touchscreen/HS03/jdchipset/jadard_module.h
+          grep -n 'module_jd9365t_health_check' drivers/input/touchscreen/HS03/jdchipset/jadard_ic_JD9365T.c
+          grep -n 'jadard_health_work_function' drivers/input/touchscreen/HS03/jdchipset/jadard_common.c
+
+      - name: Integrate pinned KernelSU Next
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          curl -LSs \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_TAG}/kernel/setup.sh" \
+            -o /tmp/ksu-setup.sh
+          sh /tmp/ksu-setup.sh "${KSU_TAG}"
+          test -L drivers/kernelsu
+          test -f KernelSU-Next/kernel/Kconfig
+          test "$(git -C KernelSU-Next describe --tags --exact-match)" = "${KSU_TAG}"
+
+      - name: Configure kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+
+          export CROSS_COMPILE="$PWD/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-"
+          export ARCH=arm64
+          export CLANG_TOOL_PATH="$PWD/toolchain/clang/host/linux-x86/clang-r383902/bin"
+          export PATH="${CLANG_TOOL_PATH}:${PATH}"
+          export BSP_BUILD_FAMILY=qogirl6
+          export DTC_OVERLAY_TEST_EXT="$PWD/tools/mkdtimg/ufdt_apply_overlay"
+          export DTC_OVERLAY_VTS_EXT="$PWD/tools/mkdtimg/ufdt_verify_overlay_host"
+          export BSP_BUILD_ANDROID_OS=y
+
+          command -v clang
+          command -v ld.lld
+          command -v "${CROSS_COMPILE}as"
+          clang --version
+          ld.lld --version
+
+          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
+            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- a03_cis_open_defconfig
+
+          ./scripts/config --file out/.config \
+            --set-str LOCALVERSION '-a03_IverCoder-touchfix-v2-Jadard-KSUNext'
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO
+          ./scripts/config --file out/.config -e OVERLAY_FS
+          ./scripts/config --file out/.config -e KSU
+          ./scripts/config --file out/.config -e KSU_KPROBES_HOOK
+
+          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
+            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig
+
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' out/.config
+          grep -q '^CONFIG_KPROBES=y$' out/.config
+          grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
+          grep -q '^CONFIG_TOUCHSCREEN_JADARD_IC_JD9365T=y$' out/.config
+          grep '^CONFIG_LOCALVERSION=' out/.config
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+
+          export CROSS_COMPILE="$PWD/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-"
+          export ARCH=arm64
+          export CLANG_TOOL_PATH="$PWD/toolchain/clang/host/linux-x86/clang-r383902/bin"
+          export PATH="${CLANG_TOOL_PATH}:${PATH}"
+          export BSP_BUILD_FAMILY=qogirl6
+          export DTC_OVERLAY_TEST_EXT="$PWD/tools/mkdtimg/ufdt_apply_overlay"
+          export DTC_OVERLAY_VTS_EXT="$PWD/tools/mkdtimg/ufdt_verify_overlay_host"
+          export BSP_BUILD_ANDROID_OS=y
+
+          make O="$PWD/out" BSP_BUILD_DT_OVERLAY=y CC=clang LD=ld.lld \
+            ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- -j"$(nproc)"
+
+          test -s out/arch/arm64/boot/Image
+          ls -lh out/arch/arm64/boot/Image
+
+      - name: Download and verify original IverCoder boot template
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p template/extracted template/nested
+
+          URL="https://github.com/${IVER_REPO}/releases/download/${IVER_TAG}/${IVER_RELEASE_ASSET}"
+          curl -L --fail --retry 5 --retry-delay 2 -o template/original.7z "$URL"
+
+          echo "${IVER_RELEASE_SHA256}  template/original.7z" | sha256sum -c -
+          7z x -y -otemplate/extracted template/original.7z
+
+          echo 'Original release package contents:'
+          find template/extracted -maxdepth 3 -type f -printf '%P  %s bytes\n' | sort
+
+          find_boot_img() {
+            find "$1" -type f \( -iname 'boot.img' -o -iname '*boot*.img' \) -print -quit
+          }
+
+          TEMPLATE_IMG="$(find_boot_img template/extracted || true)"
+
+          if [ -z "$TEMPLATE_IMG" ]; then
+            while IFS= read -r nested; do
+              case "$nested" in
+                *.tar|*.tar.md5)
+                  tar -xf "$nested" -C template/nested || true
+                  ;;
+                *.tar.xz)
+                  tar -xJf "$nested" -C template/nested || true
+                  ;;
+                *.tar.gz|*.tgz)
+                  tar -xzf "$nested" -C template/nested || true
+                  ;;
+              esac
+            done < <(find template/extracted -type f \( -iname '*.tar' -o -iname '*.tar.md5' -o -iname '*.tar.xz' -o -iname '*.tar.gz' -o -iname '*.tgz' \))
+
+            TEMPLATE_IMG="$(find_boot_img template/nested || true)"
+          fi
+
+          if [ -z "$TEMPLATE_IMG" ]; then
+            BOOT_LZ4="$(find template/extracted template/nested -type f -iname '*boot*.img.lz4' -print -quit || true)"
+            if [ -n "$BOOT_LZ4" ]; then
+              lz4 -d "$BOOT_LZ4" template/original-boot.img
+              TEMPLATE_IMG=template/original-boot.img
+            fi
+          fi
+
+          test -n "$TEMPLATE_IMG"
+          test -s "$TEMPLATE_IMG"
+          if [ "$TEMPLATE_IMG" != "template/original-boot.img" ]; then
+            cp "$TEMPLATE_IMG" template/original-boot.img
+          fi
+          ls -lh template/original-boot.img
+
+      - name: Repack boot image and create Odin TAR
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p repack artifact odin
+
+          cp template/original-boot.img repack/original-boot.img
+          cp kernel/Publish/magiskboot repack/magiskboot
+          chmod +x repack/magiskboot
+
+          cd repack
+          ./magiskboot unpack original-boot.img
+          test -e kernel
+          cp ../kernel/out/arch/arm64/boot/Image kernel
+          ./magiskboot repack original-boot.img boot.img
+          test -s boot.img
+          cd ..
+
+          cp repack/boot.img odin/boot.img
+          tar --format=ustar -cf "artifact/${OUT_NAME}.tar" -C odin boot.img
+
+          sha256sum "artifact/${OUT_NAME}.tar" > artifact/SHA256SUMS.txt
+          ls -lh artifact/*
+
+      - name: Write build metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "Device: Samsung Galaxy A03 SM-A035F"
+            echo "Base kernel source: ${IVER_REPO}"
+            echo "Base tag: ${IVER_TAG}"
+            echo "Base commit: ${IVER_COMMIT}"
+            echo "KernelSU Next: ${KSU_TAG}"
+            echo "Touch driver confirmed at runtime: jadard-touchscreen"
+            echo "Jadard source implementation: JD9365T"
+            echo "Patch v2: 5-second JD9365T register liveness probe"
+            echo "Patch v2: recover after 2 consecutive failed probes"
+            echo "Recovery: HW reset + zero-flash firmware reload + restore settings + IRQ enable"
+            echo "Novatek/Chipone: unchanged"
+            echo "DTC fix: HOSTLOADLIBES_dtc=-lyaml for this kernel's old Kbuild"
+            echo "Boot template: original IverCoder ${IVER_TAG} release asset"
+          } > artifact/BUILD-INFO.txt
+
+      - name: Upload flashable kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUT_NAME }}
+          path: artifact/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
