@@ -1,7 +1,8 @@
-name: Build HyperOS 1 + touchfix kernel v4.3
+name: Build HyperOS 1 Lite + touchfix kernel v4.5 Safe
 
 permissions:
   contents: write
+  actions: read
 
 on:
   push:
@@ -11,7 +12,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: hyperos1-a035f-bit9-v43
+  group: hyperos1-lite-a035f-bit9-v45
   cancel-in-progress: false
 
 jobs:
@@ -82,44 +83,62 @@ jobs:
           test -s HyperOS-1-A035F-BIT9-super.7z.001
           ls -lh HyperOS-1-A035F-BIT9-super.7z.*
 
-      - name: Add touchfix kernel v4.3 and instructions
+      - name: Add touchfix kernel v4.5 Safe and instructions
         working-directory: lpbinary/binary
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          wget --tries=3 --timeout=30 "https://github.com/mysmallstar12/Custom-Rom-Builder-For-Samsung-Galaxy-A03/releases/download/lineage20-a035f-bit9-touchfix-v4.3/A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar" -O A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar
-          test -s A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar
+          mkdir -p kernel-artifact
+          gh run download 35625162518 \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext" \
+            --dir kernel-artifact
+          KERNEL_TAR="$(find kernel-artifact -type f -name '*.tar' -print -quit)"
+          test -n "$KERNEL_TAR"
+          test -s "$KERNEL_TAR"
+          tar -tf "$KERNEL_TAR" | grep -qx 'boot.img'
+          cp "$KERNEL_TAR" A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
           printf '%s\n' \
             'Samsung Galaxy A03 SM-A035F BIT9 (A035FXXS9CYG1)' \
-            'HyperOS 1 GSI + Jadard touchfix kernel v4.3' \
+            'HyperOS 1 Lite GSI + Jadard touchfix kernel v4.5 Safe' \
+            '' \
+            'FEATURES:' \
+            '- HyperOS volume panel / virtual volume slider.' \
+            '- Google Play is included; optional Google apps can be installed later.' \
+            '- Kernel double tap wakes the display.' \
+            '- Home launcher double tap locks only from an empty Home area.' \
+            '- No kernel-wide double tap sleep, so PIN/keyboard/icon taps cannot lock the screen.' \
             '' \
             '1. Download ALL HyperOS .7z parts into the same folder.' \
             '2. Open only .7z.001 with 7-Zip and extract super.tar.' \
             '3. Odin AP: flash super.tar.' \
             '4. Reboot to recovery and factory reset / format data.' \
             '5. After first boot, return to Download Mode.' \
-            '6. Odin AP: flash A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar.' \
+            '6. Odin AP: flash A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar.' \
+            '7. In Home settings, enable Double tap to lock screen if it is not already enabled.' \
             '' \
             'Do not merge super.tar and boot/kernel tar.' \
-            'Kernel v4.3 is intended for Jadard JD9365T touch panels.' \
+            'Kernel v4.5 Safe is intended for Jadard JD9365T touch panels.' \
             'Keep a complete stock BIT9 firmware backup before flashing.' \
             > FLASH-INSTRUCTIONS.txt
-          sha256sum HyperOS-1-A035F-BIT9-super.7z.* A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar > SHA256SUMS.txt
+          sha256sum HyperOS-1-A035F-BIT9-super.7z.* A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar > SHA256SUMS.txt
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: hyperos1-a035f-bit9-touchfix-v4.3
-          name: HyperOS 1 for Galaxy A03 BIT9 + touchfix kernel v4.3
+          tag_name: hyperos1-lite-a035f-bit9-touchfix-v4.5
+          name: HyperOS 1 Lite for Galaxy A03 BIT9 + kernel v4.5 Safe
           prerelease: true
           fail_on_unmatched_files: true
           body: |
-            Experimental HyperOS 1 GSI build for Samsung Galaxy A03 SM-A035F.
+            Experimental lightweight HyperOS 1 GSI build for Samsung Galaxy A03 SM-A035F.
             Base: A035FXXS9CYG1 (BIT9).
-            Includes the separately flashable Jadard JD9365T touchfix kernel v4.3 with persistent double-tap-to-wake.
+            Includes Google Play, HyperOS virtual volume controls, launcher-only home double-tap-to-sleep, and the separately flashable Jadard JD9365T touchfix kernel v4.5 Safe with persistent double-tap-to-wake.
 
             The ROM archive is split because the complete 7z is larger than GitHub's 2 GiB per-file limit. Download every numbered part, keep them together, and extract starting from .001.
           files: |
             lpbinary/binary/HyperOS-1-A035F-BIT9-super.7z.*
-            lpbinary/binary/A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar
+            lpbinary/binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
             lpbinary/binary/FLASH-INSTRUCTIONS.txt
             lpbinary/binary/SHA256SUMS.txt
