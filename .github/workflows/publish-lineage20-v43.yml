@@ -1,4 +1,4 @@
-name: Publish LineageOS 20 + Touchfix v4.3
+name: Publish LineageOS 20 + Touchfix v4.4
 
 on:
   workflow_dispatch:
@@ -13,11 +13,12 @@ permissions:
   actions: read
 
 env:
-  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
+  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.4
+  OLD_RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
   ROM_RELEASE_TAG: '35452580914'
   ROM_ASSET: LineageOS-20-A035F-BIT9-arm64-bvN.7z
-  KERNEL_RUN_ID: '35600694919'
-  KERNEL_ARTIFACT: A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext
+  KERNEL_RUN_ID: '35608279522'
+  KERNEL_ARTIFACT: A03-touchfix-v4.4-Jadard-DT2W-DT2S-Anywhere-KSUNext
 
 jobs:
   publish:
@@ -38,7 +39,7 @@ jobs:
             --dir release
           test -s "release/${ROM_ASSET}"
 
-      - name: Download verified Touchfix v4.3 kernel artifact
+      - name: Download verified Touchfix v4.4 kernel artifact
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -56,8 +57,8 @@ jobs:
           tar -tf "${KERNEL_TAR}" | grep -qx 'boot.img'
           cp "${KERNEL_TAR}" release/
 
-          if [ -f kernel-artifact/BUILD_INFO.txt ]; then
-            cp kernel-artifact/BUILD_INFO.txt release/KERNEL_BUILD_INFO.txt
+          if [ -f kernel-artifact/BUILD-INFO.txt ]; then
+            cp kernel-artifact/BUILD-INFO.txt release/KERNEL_BUILD_INFO.txt
           fi
 
       - name: Create flash instructions and checksums
@@ -66,7 +67,7 @@ jobs:
           set -euxo pipefail
           cat > release/FLASH_INSTRUCTIONS.txt <<'EOF'
           SAMSUNG GALAXY A03 SM-A035F - BIT 9
-          LINEAGEOS 20 + TOUCHFIX v4.3 PERSISTENT
+          LINEAGEOS 20 + TOUCHFIX v4.4 - DT2W + DT2S ANYWHERE
 
           CANH BAO:
           - Chi dung cho SM-A035F, bootloader Bit 9, da mo khoa bootloader.
@@ -78,7 +79,7 @@ jobs:
           2. Flash super.tar theo huong dan ROM A03 hien tai.
           3. Khoi dong/hoan tat cai dat ROM neu quy trinh ROM yeu cau.
           4. Vao Download Mode lan nua.
-          5. Odin: chon A03-touchfix-v4.3-...tar trong o AP.
+          5. Odin: chon A03-touchfix-v4.4-...tar trong o AP.
           6. KHONG chon Re-Partition. Bam Start.
           7. Sau khi khoi dong, mo khoa mot lan, tat man hinh, doi 3 giay,
              cham nhanh hai lan giua man hinh de thu DT2W.
@@ -86,6 +87,7 @@ jobs:
           TINH NANG KERNEL:
           - Jadard JD9365T touch recovery watchdog.
           - Double-tap-to-wake luon bat, khong bi Lineage tat sau lan mo khoa.
+          - Double-tap-to-sleep tai bat ky vi tri nao tren man hinh dang sang.
           - One-shot KEY_POWER de tranh vua sang lai tat.
           - KernelSU Next v1.0.9.
 
@@ -110,9 +112,14 @@ jobs:
 
           gh release create "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "LineageOS 20 A035F Bit 9 + Touchfix v4.3 Persistent" \
-            --notes "Complete SM-A035F Bit 9 package: LineageOS 20 ROM plus the tested Touchfix v4.3 persistent double-tap-to-wake kernel. Flash super.tar and boot TAR separately as described in FLASH_INSTRUCTIONS.txt." \
+            --title "LineageOS 20 A035F Bit 9 + Touchfix v4.4" \
+            --notes "Complete SM-A035F Bit 9 package: LineageOS 20 ROM plus Touchfix v4.4 with persistent double-tap-to-wake and double-tap-to-sleep anywhere. Flash super.tar and boot TAR separately as described in FLASH_INSTRUCTIONS.txt." \
             release/*
+
+          # The new v4.4 package replaces the obsolete v4.3 release.
+          if gh release view "${OLD_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete "${OLD_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
+          fi
 
           gh release view "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
