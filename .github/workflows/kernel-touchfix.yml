@@ -18,7 +18,7 @@ env:
   IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
   IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
   KSU_TAG: v1.0.9
-  OUT_NAME: A03-touchfix-v4-Jadard-DT2W-DT2S-KSUNext
+  OUT_NAME: A03-touchfix-v4.1-Jadard-DT2W-PowerKey-KSUNext
 
 jobs:
   build:
@@ -178,6 +178,19 @@ jobs:
               "    ts->gesture_cust_en[0] = true;\n",
               "    ts->SMWP_enable = true;\n"
               "    ts->gesture_cust_en[0] = true;\n",
+          )
+
+          # Some GSI/Lineage input maps ignore KEY_WAKEUP. KEY_POWER follows
+          # the same path as the physical power button and reliably wakes the
+          # display without bypassing the lock screen.
+          replace_once(
+              common,
+              "uint16_t jd_gest_key_def[JD_GEST_SUP_NUM] = {\n"
+              "    KEY_WAKEUP\n"
+              "};\n",
+              "uint16_t jd_gest_key_def[JD_GEST_SUP_NUM] = {\n"
+              "    KEY_POWER\n"
+              "};\n",
           )
 
           replace_once(
