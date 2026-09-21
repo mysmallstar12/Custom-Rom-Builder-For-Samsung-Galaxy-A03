@@ -1,0 +1,119 @@
+name: Publish LineageOS 20 + Touchfix v4.3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-lineage20-v43.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
+  ROM_RELEASE_TAG: '35452580914'
+  ROM_ASSET: LineageOS-20-A035F-BIT9-arm64-bvN.7z
+  KERNEL_RUN_ID: '35600694919'
+  KERNEL_ARTIFACT: A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Download persistent LineageOS 20 ROM asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          gh release download "${ROM_RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${ROM_ASSET}" \
+            --dir release
+          test -s "release/${ROM_ASSET}"
+
+      - name: Download verified Touchfix v4.3 kernel artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p kernel-artifact
+          gh run download "${KERNEL_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${KERNEL_ARTIFACT}" \
+            --dir kernel-artifact
+
+          KERNEL_TAR="$(find kernel-artifact -maxdepth 2 -type f -name '*.tar' -print -quit)"
+          test -n "${KERNEL_TAR}"
+          test -s "${KERNEL_TAR}"
+          tar -tf "${KERNEL_TAR}" | grep -qx 'boot.img'
+          cp "${KERNEL_TAR}" release/
+
+          if [ -f kernel-artifact/BUILD_INFO.txt ]; then
+            cp kernel-artifact/BUILD_INFO.txt release/KERNEL_BUILD_INFO.txt
+          fi
+
+      - name: Create flash instructions and checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > release/FLASH_INSTRUCTIONS.txt <<'EOF'
+          SAMSUNG GALAXY A03 SM-A035F - BIT 9
+          LINEAGEOS 20 + TOUCHFIX v4.3 PERSISTENT
+
+          CANH BAO:
+          - Chi dung cho SM-A035F, bootloader Bit 9, da mo khoa bootloader.
+          - Sao luu du lieu va firmware goc truoc khi flash.
+          - Double tap chi danh thuc man hinh khoa, khong vuot PIN/mat khau.
+
+          THU TU:
+          1. Giai nen LineageOS-20-A035F-BIT9-arm64-bvN.7z de lay super.tar.
+          2. Flash super.tar theo huong dan ROM A03 hien tai.
+          3. Khoi dong/hoan tat cai dat ROM neu quy trinh ROM yeu cau.
+          4. Vao Download Mode lan nua.
+          5. Odin: chon A03-touchfix-v4.3-...tar trong o AP.
+          6. KHONG chon Re-Partition. Bam Start.
+          7. Sau khi khoi dong, mo khoa mot lan, tat man hinh, doi 3 giay,
+             cham nhanh hai lan giua man hinh de thu DT2W.
+
+          TINH NANG KERNEL:
+          - Jadard JD9365T touch recovery watchdog.
+          - Double-tap-to-wake luon bat, khong bi Lineage tat sau lan mo khoa.
+          - One-shot KEY_POWER de tranh vua sang lai tat.
+          - KernelSU Next v1.0.9.
+
+          Neu may khong dung cam ung Jadard JD9365T, DT2W/touchfix co the
+          khong hoat dong. Neu treo logo, flash lai boot/firmware goc.
+          EOF
+
+          (
+            cd release
+            sha256sum ./*.7z ./*.tar > SHA256SUMS.txt
+          )
+          ls -lh release
+
+      - name: Publish permanent GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          test "$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; echo $?)" != "0" \
+            || gh release delete "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
+
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "LineageOS 20 A035F Bit 9 + Touchfix v4.3 Persistent" \
+            --notes "Complete SM-A035F Bit 9 package: LineageOS 20 ROM plus the tested Touchfix v4.3 persistent double-tap-to-wake kernel. Flash super.tar and boot TAR separately as described in FLASH_INSTRUCTIONS.txt." \
+            release/*
+
+          gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json url,tagName,name
