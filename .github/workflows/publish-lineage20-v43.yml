@@ -15,7 +15,7 @@ permissions:
 env:
   RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.4
   OLD_RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
-  ROM_RELEASE_TAG: '35452580914'
+  ROM_RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
   ROM_ASSET: LineageOS-20-A035F-BIT9-arm64-bvN.7z
   KERNEL_RUN_ID: '35608279522'
   KERNEL_ARTIFACT: A03-touchfix-v4.4-Jadard-DT2W-DT2S-Anywhere-KSUNext
