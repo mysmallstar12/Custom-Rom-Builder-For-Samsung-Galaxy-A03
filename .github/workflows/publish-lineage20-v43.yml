@@ -16,8 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.5-safe
+  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.5-safe-volume
   GSI_URL: https://downloads.sourceforge.net/project/andyyan-gsi/lineage-20-td/lineage-20.0-20251021-UNOFFICIAL-arm64_bvN.img.gz
+  VOLUME_APK_URL: https://f-droid.org/repo/fr.smarquis.soundquicksettings_11000.apk
+  VOLUME_APK_SHA256: 039306979cf26dd0acede7d56bbdec347519a1585300a2edd09d45cfaf27ecd8
   KERNEL_RUN_ID: '35625162518'
   KERNEL_ARTIFACT: A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext
 
@@ -36,7 +38,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            aria2 gzip p7zip-full file android-sdk-libsparse-utils
+            aria2 gzip p7zip-full file e2fsprogs attr android-sdk-libsparse-utils
           git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
           cd lpbinary
           bash install.sh
@@ -53,6 +55,52 @@ jobs:
           gunzip system.img.gz
           test -s system.img
           file system.img
+
+      - name: Integrate virtual volume Quick Settings tile
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          aria2c --max-connection-per-server=4 --split=4 --min-split-size=1M \
+            --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+            --max-tries=8 --retry-wait=3 "${VOLUME_APK_URL}" -o SoundQuickSettings.apk
+          echo "${VOLUME_APK_SHA256}  SoundQuickSettings.apk" | sha256sum -c -
+
+          if file system.img | grep -qi 'Android sparse image'; then
+            simg2img system.img system.raw.img
+            mv system.raw.img system.img
+          fi
+
+          set +e
+          sudo e2fsck -fy system.img
+          FSCK_RC=$?
+          set -e
+          test "${FSCK_RC}" -le 1
+          truncate -s +128M system.img
+          sudo resize2fs system.img
+          sudo e2fsck -fy -E unshare_blocks system.img || true
+
+          mkdir -p system-mnt
+          sudo mount -o loop,rw system.img system-mnt
+          trap 'sudo umount system-mnt || true' EXIT
+          SYSTEM_ROOT=system-mnt
+          if [ -d system-mnt/system/app ]; then
+            SYSTEM_ROOT=system-mnt/system
+          fi
+          sudo mkdir -p "${SYSTEM_ROOT}/app/SoundQuickSettings"
+          sudo cp SoundQuickSettings.apk \
+            "${SYSTEM_ROOT}/app/SoundQuickSettings/SoundQuickSettings.apk"
+          sudo chown -R 0:0 "${SYSTEM_ROOT}/app/SoundQuickSettings"
+          sudo chmod 0755 "${SYSTEM_ROOT}/app/SoundQuickSettings"
+          sudo chmod 0644 "${SYSTEM_ROOT}/app/SoundQuickSettings/SoundQuickSettings.apk"
+          sudo setfattr -n security.selinux -v 'u:object_r:system_file:s0' \
+            "${SYSTEM_ROOT}/app/SoundQuickSettings" || true
+          sudo setfattr -n security.selinux -v 'u:object_r:system_file:s0' \
+            "${SYSTEM_ROOT}/app/SoundQuickSettings/SoundQuickSettings.apk" || true
+          sync
+          sudo umount system-mnt
+          trap - EXIT
+          rm -rf system-mnt SoundQuickSettings.apk
 
       - name: Download BIT9 stock partitions with multiple connections
         working-directory: lpbinary/binary
@@ -142,12 +190,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: LineageOS 20 Stable A035F BIT9 + kernel v4.5 Safe
+          name: LineageOS 20 Stable A035F BIT9 + kernel v4.5 Safe + Volume
           prerelease: false
           fail_on_unmatched_files: true
           body: |
             Permanent recovery build based on the older stable LineageOS 20 GSI that worked well with kernel v4.3.
             Updated to kernel v4.5 Safe: persistent Jadard double-tap-to-wake without unsafe kernel-wide double-tap-to-sleep.
+            Includes the lightweight Sound Quick Settings system APK. Add the Volume tile from Quick Settings edit mode; tap it to open the native volume slider.
             This release is separate from the HyperOS build.
           files: |
             lpbinary/binary/LineageOS-20-A035F-BIT9-v4.5-Safe-super.7z.*
