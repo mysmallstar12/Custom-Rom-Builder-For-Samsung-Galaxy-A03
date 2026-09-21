@@ -18,7 +18,7 @@ env:
   IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
   IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
   KSU_TAG: v1.0.9
-  OUT_NAME: A03-touchfix-v4.1-Jadard-DT2W-PowerKey-KSUNext
+  OUT_NAME: A03-touchfix-v4.2-Jadard-DT2W-OneShot-KSUNext
 
 jobs:
   build:
@@ -191,6 +191,42 @@ jobs:
               "uint16_t jd_gest_key_def[JD_GEST_SUP_NUM] = {\n"
               "    KEY_POWER\n"
               "};\n",
+          )
+
+          # A single physical double tap can produce more than one gesture IRQ.
+          # With KEY_POWER that would wake and immediately switch the display
+          # off again. Latch the first wake event until display resume completes.
+          replace_once(
+              common,
+              "static void jadard_wake_event_report(void)\n"
+              "{\n"
+              "    int event_chk = pjadard_host_data->SMWP_event_chk;\n",
+              "static bool jd_dt2w_wake_sent;\n\n"
+              "static void jadard_wake_event_report(void)\n"
+              "{\n"
+              "    int event_chk = pjadard_host_data->SMWP_event_chk;\n\n"
+              "    if (jd_dt2w_wake_sent) {\n"
+              "        pjadard_host_data->SMWP_event_chk = 0;\n"
+              "        return;\n"
+              "    }\n",
+          )
+
+          replace_once(
+              common,
+              "    if (event_chk > 0) {\n"
+              "        JD_I(\"%s SMART WAKEUP KEY event %d press\\n\", __func__, event_chk);\n",
+              "    if (event_chk > 0) {\n"
+              "        jd_dt2w_wake_sent = true;\n"
+              "        JD_I(\"%s SMART WAKEUP KEY event %d press\\n\", __func__, event_chk);\n",
+          )
+
+          replace_once(
+              common,
+              "    atomic_set(&ts->suspend_mode, 0);\n\n"
+              "#if defined(JD_SMART_WAKEUP)\n",
+              "    atomic_set(&ts->suspend_mode, 0);\n\n"
+              "#if defined(JD_SMART_WAKEUP)\n"
+              "    jd_dt2w_wake_sent = false;\n",
           )
 
           replace_once(
