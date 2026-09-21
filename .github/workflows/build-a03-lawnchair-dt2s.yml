@@ -1,0 +1,134 @@
+name: Build A03 Lawnchair DT2S Module
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-a03-lawnchair-dt2s.yml'
+
+permissions:
+  contents: write
+
+env:
+  LAWNCHAIR_REPO: LawnchairLauncher/lawnchair
+  LAWNCHAIR_REF: 13-dev
+  MODULE_ID: a03_lawnchair_dt2s
+  MODULE_NAME: A03-Lawnchair-Android13-DT2S-v1
+  RELEASE_TAG: a03-lawnchair-dt2s-v1
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Lawnchair Android 13 source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LAWNCHAIR_REPO }}
+          ref: ${{ env.LAWNCHAIR_REF }}
+          submodules: recursive
+          path: lawnchair
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify safe home-only gesture default
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd lawnchair
+          grep -A4 'val doubleTapGestureHandler' \
+            lawnchair/src/app/lawnchair/preferences2/PreferenceManager2.kt \
+            | grep -q 'defaultValue = GestureHandlerConfig.Sleep'
+          grep -q 'gesture_handler_sleep' lawnchair/res/values/strings.xml
+
+      - name: Build Android 13 launcher APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd lawnchair
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleLawnWithQuickstepDebug
+          APK="$(find build/outputs/apk/lawnWithQuickstep/debug -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          test -s "$APK"
+          mkdir -p ../module/system/app/A03Lawnchair
+          cp "$APK" ../module/system/app/A03Lawnchair/A03Lawnchair.apk
+
+      - name: Create KernelSU and Magisk module
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p artifact
+          cat > module/module.prop <<EOF
+          id=${MODULE_ID}
+          name=A03 Lawnchair Android 13 - Home DT2S
+          version=v1
+          versionCode=1
+          author=mysmallstar12
+          description=Installs Lawnchair Android 13 as a second safe launcher. Double tap sleep is handled only on the Home workspace, never in PIN, keyboard, icons, or apps.
+          EOF
+
+          cat > module/README.txt <<'EOF'
+          A03 LAWNCHAIR ANDROID 13 - DOUBLE TAP TO SLEEP
+
+          CAI DAT:
+          1. Mo KernelSU Manager hoac Magisk.
+          2. Modules > Install from storage > chon file ZIP nay.
+          3. Khoi dong lai.
+          4. Bam Home, chon Lawnchair va chon Luon luon.
+          5. Khi Lawnchair hoi quyen khoa man hinh/Quan tri thiet bi, hay cho phep.
+
+          SU DUNG:
+          - Cham dup vung TRONG tren man hinh Home de tat man hinh.
+          - Cham icon se mo ung dung, khong tat man hinh.
+          - Ban phim, PIN va thao tac trong app khong bi launcher bat cu chi.
+          - Kernel v4.5 Safe tiep tuc xu ly double tap de danh thuc.
+
+          KHOI PHUC:
+          - Neu khong muon dung, vao KernelSU/Magisk > Modules, go module nay va khoi dong lai.
+          - Launcher cu khong bi xoa khoi ROM.
+          EOF
+
+          (
+            cd module
+            zip -r9 "../artifact/${MODULE_NAME}.zip" .
+          )
+          sha256sum "artifact/${MODULE_NAME}.zip" > artifact/SHA256SUMS.txt
+          ls -lh artifact/*
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.MODULE_NAME }}
+          path: artifact/
+          compression-level: 9
+          retention-days: 30
+
+      - name: Publish permanent release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "A03 Lawnchair Android 13 - Home DT2S" \
+            --notes "KernelSU/Magisk module. Adds Lawnchair based on Android 13 with double-tap-to-sleep on the empty Home workspace. The original launcher remains installed for safe recovery." \
+            artifact/*
