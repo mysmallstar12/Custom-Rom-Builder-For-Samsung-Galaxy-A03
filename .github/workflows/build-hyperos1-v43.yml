@@ -13,7 +13,7 @@ on:
 
 concurrency:
   group: hyperos1-lite-a035f-bit9-v45
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils unzip p7zip-full wget file android-sdk-libsparse-utils
+          sudo apt-get install -y aria2 xz-utils unzip p7zip-full wget file android-sdk-libsparse-utils
           git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
           cd lpbinary
           bash install.sh
@@ -36,7 +36,10 @@ jobs:
         working-directory: lpbinary/binary
         run: |
           set -euo pipefail
-          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/sharplowmaybe.zip/download" -O gsi.zip
+          aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+            --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+            --max-tries=8 --retry-wait=3 \
+            "https://downloads.sourceforge.net/project/a03-file/sharplowmaybe.zip" -o gsi.zip
           unzip -t gsi.zip
           mkdir gsi
           unzip -q gsi.zip -d gsi
@@ -50,9 +53,13 @@ jobs:
         working-directory: lpbinary/binary
         run: |
           set -euo pipefail
-          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/A035FXXS9CYG1/vendor.img/download" -O vendor.img
-          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/A035FXXS9CYG1/product.img/download" -O product.img
-          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/A035FXXS9CYG1/system_ext.img/download" -O system_ext.img
+          for image in vendor product system_ext; do
+            aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+              --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=8 --retry-wait=3 \
+              "https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1/${image}.img" \
+              -o "${image}.img"
+          done
           test -s vendor.img
           test -s product.img
           test -s system_ext.img
