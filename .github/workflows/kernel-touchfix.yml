@@ -18,7 +18,7 @@ env:
   IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
   IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
   KSU_TAG: v1.0.9
-  OUT_NAME: A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext
+  OUT_NAME: A03-touchfix-v4.4-Jadard-DT2W-DT2S-Anywhere-KSUNext
 
 jobs:
   build:
@@ -260,9 +260,9 @@ jobs:
               "    JD_I(\"%s: Double-click wake forced on by touchfix v4\\n\", __func__);\n",
           )
 
-          # Add double-tap-to-sleep in the top 15% of the active screen. Keeping
-          # it in the status-bar area prevents normal double taps in apps from
-          # unexpectedly locking the phone.
+          # Add double-tap-to-sleep across the full active screen, as requested.
+          # The gesture still requires one finger, two short taps, limited movement,
+          # and both taps near the same coordinates.
           dt2s = r'''
           static bool jd_dt2s_tracking;
           static int jd_dt2s_down_x;
@@ -275,16 +275,13 @@ jobs:
           static void jadard_double_tap_sleep(struct jadard_ts_data *ts)
           {
               int i;
-              int top_limit = ts->pdata->abs_y_max * 15 / 100;
-
               if (ts->suspended || !ts->tp_on_off)
                   return;
 
               for (i = 0; i < pjadard_ic_data->JD_MAX_PT; i++) {
                   if (pjadard_host_data->event[i] == JD_DOWN_EVENT) {
                       jd_dt2s_tracking =
-                          (pjadard_host_data->finger_num == 1 &&
-                           pjadard_host_data->y[i] <= top_limit);
+                          (pjadard_host_data->finger_num == 1);
                       jd_dt2s_down_x = pjadard_host_data->x[i];
                       jd_dt2s_down_y = pjadard_host_data->y[i];
                       jd_dt2s_down_jiffies = jiffies;
@@ -315,7 +312,7 @@ jobs:
                           input_report_key(ts->input_dev, KEY_POWER, 0);
                           input_sync(ts->input_dev);
                           jd_dt2s_first_tap_jiffies = 0;
-                          JD_I("Double tap status bar: KEY_POWER\n");
+                          JD_I("Double tap anywhere: KEY_POWER\n");
                       } else {
                           jd_dt2s_first_tap_jiffies = jiffies;
                           jd_dt2s_first_x = jd_dt2s_down_x;
@@ -539,7 +536,7 @@ jobs:
             ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- a03_cis_open_defconfig
 
           ./scripts/config --file out/.config \
-            --set-str LOCALVERSION '-a03_IverCoder-touchfix-v3-Jadard-KSUNext'
+            --set-str LOCALVERSION '-a03_IverCoder-touchfix-v4.4-Jadard-KSUNext'
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO
           ./scripts/config --file out/.config -e OVERLAY_FS
           ./scripts/config --file out/.config -e KSU
@@ -666,8 +663,9 @@ jobs:
             echo "KernelSU Next: ${KSU_TAG}"
             echo "Touch driver confirmed at runtime: jadard-touchscreen"
             echo "Jadard source implementation: JD9365T"
-            echo "Patch v3: 5-second JD9365T register liveness probe"
-            echo "Patch v3: recover after 2 consecutive failed probes"
+            echo "Patch v4.4: double-tap-to-sleep across the full active screen"
+            echo "Patch v4.4: one-finger/timing/movement filters retained"
+            echo "Watchdog: 5-second JD9365T register liveness probe; recover after 2 failures"
             echo "Recovery: HW reset + zero-flash firmware reload + restore settings + IRQ enable"
             echo "Novatek/Chipone: unchanged"
             echo "DTC fix: HOSTLOADLIBES_dtc=-lyaml for this kernel's old Kbuild"
