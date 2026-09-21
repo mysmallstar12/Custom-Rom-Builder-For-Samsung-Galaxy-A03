@@ -1,10 +1,9 @@
-name: Publish LineageOS 20 + Touchfix v4.4
+name: Build LineageOS 20 Stable + kernel v4.5 Safe
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - '.github/workflows/publish-lineage20-v43.yml'
 
@@ -12,34 +11,86 @@ permissions:
   contents: write
   actions: read
 
+concurrency:
+  group: lineage20-a035f-bit9-v45-safe
+  cancel-in-progress: true
+
 env:
-  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.4
-  OLD_RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
-  ROM_RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.3
-  ROM_ASSET: LineageOS-20-A035F-BIT9-arm64-bvN.7z
-  KERNEL_RUN_ID: '35608279522'
-  KERNEL_ARTIFACT: A03-touchfix-v4.4-Jadard-DT2W-DT2S-Anywhere-KSUNext
+  RELEASE_TAG: lineage20-a035f-bit9-touchfix-v4.5-safe
+  GSI_URL: https://downloads.sourceforge.net/project/andyyan-gsi/lineage-20-td/lineage-20.0-20251021-UNOFFICIAL-arm64_bvN.img.gz
+  KERNEL_RUN_ID: '35625162518'
+  KERNEL_ARTIFACT: A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
-      - name: Download persistent LineageOS 20 ROM asset
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies and lpmake
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          mkdir -p release
-          gh release download "${ROM_RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "${ROM_ASSET}" \
-            --dir release
-          test -s "release/${ROM_ASSET}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            aria2 gzip p7zip-full file android-sdk-libsparse-utils
+          git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
+          cd lpbinary
+          bash install.sh
 
-      - name: Download verified Touchfix v4.4 kernel artifact
+      - name: Download stable LineageOS 20 GSI with multiple connections
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+            --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+            --max-tries=8 --retry-wait=3 "${GSI_URL}" -o system.img.gz
+          gzip -t system.img.gz
+          gunzip system.img.gz
+          test -s system.img
+          file system.img
+
+      - name: Download BIT9 stock partitions with multiple connections
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for image in vendor product system_ext; do
+            aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+              --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=8 --retry-wait=3 \
+              "https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1/${image}.img" \
+              -o "${image}.img"
+            test -s "${image}.img"
+          done
+
+      - name: Build Odin super image
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:$(stat -c%s system.img):main --image system=system.img \
+            --partition vendor:readonly:$(stat -c%s vendor.img):main --image vendor=vendor.img \
+            --partition product:readonly:$(stat -c%s product.img):main --image product=product.img \
+            --partition system_ext:readonly:$(stat -c%s system_ext.img):main --image system_ext=system_ext.img \
+            --sparse --output super.img
+          tar -cf super.tar super.img
+          7z a -mx=7 -v1900m LineageOS-20-A035F-BIT9-v4.5-Safe-super.7z super.tar
+          test -s LineageOS-20-A035F-BIT9-v4.5-Safe-super.7z.001
+          rm -f super.img super.tar system.img vendor.img product.img system_ext.img
+
+      - name: Add verified kernel v4.5 Safe
+        working-directory: lpbinary/binary
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -50,77 +101,56 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --name "${KERNEL_ARTIFACT}" \
             --dir kernel-artifact
-
-          KERNEL_TAR="$(find kernel-artifact -maxdepth 2 -type f -name '*.tar' -print -quit)"
+          KERNEL_TAR="$(find kernel-artifact -type f -name '*.tar' -print -quit)"
           test -n "${KERNEL_TAR}"
           test -s "${KERNEL_TAR}"
           tar -tf "${KERNEL_TAR}" | grep -qx 'boot.img'
-          cp "${KERNEL_TAR}" release/
+          cp "${KERNEL_TAR}" A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
 
-          if [ -f kernel-artifact/BUILD-INFO.txt ]; then
-            cp kernel-artifact/BUILD-INFO.txt release/KERNEL_BUILD_INFO.txt
-          fi
-
-      - name: Create flash instructions and checksums
+      - name: Create instructions and checksums
+        working-directory: lpbinary/binary
         shell: bash
         run: |
           set -euxo pipefail
-          cat > release/FLASH_INSTRUCTIONS.txt <<'EOF'
+          cat > FLASH-INSTRUCTIONS.txt <<'EOF'
           SAMSUNG GALAXY A03 SM-A035F - BIT 9
-          LINEAGEOS 20 + TOUCHFIX v4.4 - DT2W + DT2S ANYWHERE
+          LINEAGEOS 20 STABLE + KERNEL v4.5 SAFE
 
-          CANH BAO:
-          - Chi dung cho SM-A035F, bootloader Bit 9, da mo khoa bootloader.
-          - Sao luu du lieu va firmware goc truoc khi flash.
-          - Double tap chi danh thuc man hinh khoa, khong vuot PIN/mat khau.
+          Day la ban LineageOS 20 cu on dinh tung chay tot voi kernel v4.3,
+          nay duoc dong goi lai voi kernel v4.5 Safe.
 
-          THU TU:
-          1. Giai nen LineageOS-20-A035F-BIT9-arm64-bvN.7z de lay super.tar.
-          2. Flash super.tar theo huong dan ROM A03 hien tai.
-          3. Khoi dong/hoan tat cai dat ROM neu quy trinh ROM yeu cau.
-          4. Vao Download Mode lan nua.
-          5. Odin: chon A03-touchfix-v4.4-...tar trong o AP.
-          6. KHONG chon Re-Partition. Bam Start.
-          7. Sau khi khoi dong, mo khoa mot lan, tat man hinh, doi 3 giay,
-             cham nhanh hai lan giua man hinh de thu DT2W.
+          1. Tai TAT CA cac phan .7z.001, .002... vao cung mot thu muc.
+          2. Mo file .7z.001 bang 7-Zip va giai nen super.tar.
+          3. Odin: dua super.tar vao AP, KHONG chon Re-Partition, bam Start.
+          4. Vao recovery, factory reset / format data, sau do khoi dong ROM.
+          5. Vao Download Mode lan nua.
+          6. Odin AP: flash A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar.
 
-          TINH NANG KERNEL:
-          - Jadard JD9365T touch recovery watchdog.
-          - Double-tap-to-wake luon bat, khong bi Lineage tat sau lan mo khoa.
-          - Double-tap-to-sleep tai bat ky vi tri nao tren man hinh dang sang.
-          - One-shot KEY_POWER de tranh vua sang lai tat.
-          - KernelSU Next v1.0.9.
+          Kernel v4.5 Safe:
+          - Double tap de danh thuc man hinh luon bat.
+          - Khong co double tap sleep toan man hinh trong kernel.
+          - Khong tat nham khi go PIN, ban phim, bam icon hay thao tac lien tuc.
+          - Jadard JD9365T touch recovery watchdog va KernelSU Next.
 
-          Neu may khong dung cam ung Jadard JD9365T, DT2W/touchfix co the
-          khong hoat dong. Neu treo logo, flash lai boot/firmware goc.
+          Chi dung cho SM-A035F BIT9 voi cam ung Jadard JD9365T.
+          Sao luu du lieu va firmware goc truoc khi flash.
           EOF
+          sha256sum LineageOS-20-A035F-BIT9-v4.5-Safe-super.7z.* \
+            A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar > SHA256SUMS.txt
 
-          (
-            cd release
-            sha256sum ./*.7z ./*.tar > SHA256SUMS.txt
-          )
-          ls -lh release
-
-      - name: Publish permanent GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euxo pipefail
-          test "$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; echo $?)" != "0" \
-            || gh release delete "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
-
-          gh release create "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "LineageOS 20 A035F Bit 9 + Touchfix v4.4" \
-            --notes "Complete SM-A035F Bit 9 package: LineageOS 20 ROM plus Touchfix v4.4 with persistent double-tap-to-wake and double-tap-to-sleep anywhere. Flash super.tar and boot TAR separately as described in FLASH_INSTRUCTIONS.txt." \
-            release/*
-
-          # The new v4.4 package replaces the obsolete v4.3 release.
-          if gh release view "${OLD_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release delete "${OLD_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
-          fi
-
-          gh release view "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --json url,tagName,name
+      - name: Publish permanent release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LineageOS 20 Stable A035F BIT9 + kernel v4.5 Safe
+          prerelease: false
+          fail_on_unmatched_files: true
+          body: |
+            Permanent recovery build based on the older stable LineageOS 20 GSI that worked well with kernel v4.3.
+            Updated to kernel v4.5 Safe: persistent Jadard double-tap-to-wake without unsafe kernel-wide double-tap-to-sleep.
+            This release is separate from the HyperOS build.
+          files: |
+            lpbinary/binary/LineageOS-20-A035F-BIT9-v4.5-Safe-super.7z.*
+            lpbinary/binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+            lpbinary/binary/FLASH-INSTRUCTIONS.txt
+            lpbinary/binary/SHA256SUMS.txt
