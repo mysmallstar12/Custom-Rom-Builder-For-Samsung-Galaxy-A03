@@ -18,7 +18,7 @@ env:
   IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
   IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
   KSU_TAG: v1.0.9
-  OUT_NAME: A03-touchfix-v4.2-Jadard-DT2W-OneShot-KSUNext
+  OUT_NAME: A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext
 
 jobs:
   build:
@@ -227,6 +227,27 @@ jobs:
               "    atomic_set(&ts->suspend_mode, 0);\n\n"
               "#if defined(JD_SMART_WAKEUP)\n"
               "    jd_dt2w_wake_sent = false;\n",
+          )
+
+          # Lineage/GSI sends Samsung's aot_enable=0 after the first unlock.
+          # The vendor sec_cmd handler calls this function and otherwise turns
+          # SMWP off permanently. Keep wake gesture enabled across unlocks.
+          replace_once(
+              common,
+              "void jadard_disable_gesture_wakeup(void)\n"
+              "{\n"
+              "    struct jadard_ts_data *ts = pjadard_ts_data;\n\n"
+              "    ts->SMWP_enable = false;\n\n"
+              "    g_module_fp.fp_set_SMWP_enable(ts->SMWP_enable);\n"
+              "    JD_I(\"%s: SMART_WAKEUP_enable = %d.\\n\", __func__, ts->SMWP_enable);\n"
+              "}\n",
+              "void jadard_disable_gesture_wakeup(void)\n"
+              "{\n"
+              "    struct jadard_ts_data *ts = pjadard_ts_data;\n\n"
+              "    ts->SMWP_enable = true;\n"
+              "    g_module_fp.fp_set_SMWP_enable(true);\n"
+              "    JD_I(\"%s: ignoring AOT disable; DT2W remains enabled.\\n\", __func__);\n"
+              "}\n",
           )
 
           replace_once(
