@@ -1,0 +1,125 @@
+name: Build HyperOS 1 + touchfix kernel v4.3
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-hyperos1-v43.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: hyperos1-a035f-bit9-v43
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils unzip p7zip-full wget file android-sdk-libsparse-utils
+          git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
+          cd lpbinary
+          bash install.sh
+
+      - name: Download and extract HyperOS GSI
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/sharplowmaybe.zip/download" -O gsi.zip
+          unzip -t gsi.zip
+          mkdir gsi
+          unzip -q gsi.zip -d gsi
+          mapfile -t images < <(find gsi -type f -name '*.img')
+          test "${#images[@]}" -eq 1
+          mv "${images[0]}" system.img
+          rm -rf gsi gsi.zip
+          test -s system.img
+
+      - name: Download BIT9 stock partitions
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/A035FXXS9CYG1/vendor.img/download" -O vendor.img
+          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/A035FXXS9CYG1/product.img/download" -O product.img
+          wget --tries=3 --timeout=30 "https://sourceforge.net/projects/a03-file/files/A035FXXS9CYG1/system_ext.img/download" -O system_ext.img
+          test -s vendor.img
+          test -s product.img
+          test -s system_ext.img
+
+      - name: Build Odin super image
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          ./lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:$(stat -c%s system.img):main --image system=system.img \
+            --partition vendor:readonly:$(stat -c%s vendor.img):main --image vendor=vendor.img \
+            --partition product:readonly:$(stat -c%s product.img):main --image product=product.img \
+            --partition system_ext:readonly:$(stat -c%s system_ext.img):main --image system_ext=system_ext.img \
+            --sparse --output super.img
+          tar -cf super.tar super.img
+
+      - name: Compress and split below GitHub limit
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          7z a -mx=7 -v1900m HyperOS-1-A035F-BIT9-super.7z super.tar
+          rm -f super.img super.tar system.img vendor.img product.img system_ext.img
+          test -s HyperOS-1-A035F-BIT9-super.7z.001
+          ls -lh HyperOS-1-A035F-BIT9-super.7z.*
+
+      - name: Add touchfix kernel v4.3 and instructions
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          wget --tries=3 --timeout=30 "https://github.com/mysmallstar12/Custom-Rom-Builder-For-Samsung-Galaxy-A03/releases/download/lineage20-a035f-bit9-touchfix-v4.3/A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar" -O A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar
+          test -s A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar
+          printf '%s\n' \
+            'Samsung Galaxy A03 SM-A035F BIT9 (A035FXXS9CYG1)' \
+            'HyperOS 1 GSI + Jadard touchfix kernel v4.3' \
+            '' \
+            '1. Download ALL HyperOS .7z parts into the same folder.' \
+            '2. Open only .7z.001 with 7-Zip and extract super.tar.' \
+            '3. Odin AP: flash super.tar.' \
+            '4. Reboot to recovery and factory reset / format data.' \
+            '5. After first boot, return to Download Mode.' \
+            '6. Odin AP: flash A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar.' \
+            '' \
+            'Do not merge super.tar and boot/kernel tar.' \
+            'Kernel v4.3 is intended for Jadard JD9365T touch panels.' \
+            'Keep a complete stock BIT9 firmware backup before flashing.' \
+            > FLASH-INSTRUCTIONS.txt
+          sha256sum HyperOS-1-A035F-BIT9-super.7z.* A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar > SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: hyperos1-a035f-bit9-touchfix-v4.3
+          name: HyperOS 1 for Galaxy A03 BIT9 + touchfix kernel v4.3
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Experimental HyperOS 1 GSI build for Samsung Galaxy A03 SM-A035F.
+            Base: A035FXXS9CYG1 (BIT9).
+            Includes the separately flashable Jadard JD9365T touchfix kernel v4.3 with persistent double-tap-to-wake.
+
+            The ROM archive is split because the complete 7z is larger than GitHub's 2 GiB per-file limit. Download every numbered part, keep them together, and extract starting from .001.
+          files: |
+            lpbinary/binary/HyperOS-1-A035F-BIT9-super.7z.*
+            lpbinary/binary/A03-touchfix-v4.3-Jadard-DT2W-Persistent-KSUNext.tar
+            lpbinary/binary/FLASH-INSTRUCTIONS.txt
+            lpbinary/binary/SHA256SUMS.txt
