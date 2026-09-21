@@ -18,7 +18,7 @@ env:
   IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
   IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
   KSU_TAG: v1.0.9
-  OUT_NAME: A03-touchfix-v3-Jadard-KSUNext
+  OUT_NAME: A03-touchfix-v4-Jadard-DT2W-DT2S-KSUNext
 
 jobs:
   build:
@@ -169,6 +169,111 @@ jobs:
           )
 
           common = "drivers/input/touchscreen/HS03/jdchipset/jadard_common.c"
+
+          # Enable the JD9365T firmware's native double-click wake gesture by
+          # default. 0x80 is already mapped to KEY_WAKEUP by the vendor driver.
+          replace_once(
+              common,
+              "    ts->SMWP_enable = false;\n"
+              "    ts->gesture_cust_en[0] = true;\n",
+              "    ts->SMWP_enable = true;\n"
+              "    ts->gesture_cust_en[0] = true;\n",
+          )
+
+          replace_once(
+              common,
+              "#if defined(HQ_D85_BUILD) || defined(FTY_TP_GESTURE)\n"
+              "    jadard_enable_gesture_wakeup();\n"
+              "    JD_I(\"%s:Double click gesture default on in D85 version\\n\", __func__);\n"
+              "#endif\n",
+              "    jadard_enable_gesture_wakeup();\n"
+              "    JD_I(\"%s: Double-click wake forced on by touchfix v4\\n\", __func__);\n",
+          )
+
+          # Add double-tap-to-sleep in the top 15% of the active screen. Keeping
+          # it in the status-bar area prevents normal double taps in apps from
+          # unexpectedly locking the phone.
+          dt2s = r'''
+          static bool jd_dt2s_tracking;
+          static int jd_dt2s_down_x;
+          static int jd_dt2s_down_y;
+          static unsigned long jd_dt2s_down_jiffies;
+          static unsigned long jd_dt2s_first_tap_jiffies;
+          static int jd_dt2s_first_x;
+          static int jd_dt2s_first_y;
+
+          static void jadard_double_tap_sleep(struct jadard_ts_data *ts)
+          {
+              int i;
+              int top_limit = ts->pdata->abs_y_max * 15 / 100;
+
+              if (ts->suspended || !ts->tp_on_off)
+                  return;
+
+              for (i = 0; i < pjadard_ic_data->JD_MAX_PT; i++) {
+                  if (pjadard_host_data->event[i] == JD_DOWN_EVENT) {
+                      jd_dt2s_tracking =
+                          (pjadard_host_data->finger_num == 1 &&
+                           pjadard_host_data->y[i] <= top_limit);
+                      jd_dt2s_down_x = pjadard_host_data->x[i];
+                      jd_dt2s_down_y = pjadard_host_data->y[i];
+                      jd_dt2s_down_jiffies = jiffies;
+                  } else if (pjadard_host_data->event[i] == JD_CONTACT_EVENT &&
+                             jd_dt2s_tracking) {
+                      if (abs(pjadard_host_data->x[i] - jd_dt2s_down_x) > 60 ||
+                          abs(pjadard_host_data->y[i] - jd_dt2s_down_y) > 60)
+                          jd_dt2s_tracking = false;
+                  } else if (pjadard_host_data->event[i] == JD_UP_EVENT &&
+                             jd_dt2s_tracking) {
+                      bool short_tap = time_before(jiffies,
+                          jd_dt2s_down_jiffies + msecs_to_jiffies(260));
+                      bool second_tap = jd_dt2s_first_tap_jiffies &&
+                          time_before(jiffies,
+                              jd_dt2s_first_tap_jiffies + msecs_to_jiffies(450)) &&
+                          abs(jd_dt2s_down_x - jd_dt2s_first_x) <= 100 &&
+                          abs(jd_dt2s_down_y - jd_dt2s_first_y) <= 100;
+
+                      jd_dt2s_tracking = false;
+                      if (!short_tap) {
+                          jd_dt2s_first_tap_jiffies = 0;
+                          continue;
+                      }
+
+                      if (second_tap) {
+                          input_report_key(ts->input_dev, KEY_POWER, 1);
+                          input_sync(ts->input_dev);
+                          input_report_key(ts->input_dev, KEY_POWER, 0);
+                          input_sync(ts->input_dev);
+                          jd_dt2s_first_tap_jiffies = 0;
+                          JD_I("Double tap status bar: KEY_POWER\n");
+                      } else {
+                          jd_dt2s_first_tap_jiffies = jiffies;
+                          jd_dt2s_first_x = jd_dt2s_down_x;
+                          jd_dt2s_first_y = jd_dt2s_down_y;
+                      }
+                  }
+              }
+          }
+
+          '''
+          replace_once(
+              common,
+              "void jadard_report_points(struct jadard_ts_data *ts)\n",
+              dt2s + "void jadard_report_points(struct jadard_ts_data *ts)\n",
+          )
+
+          replace_once(
+              common,
+              "    input_sync(ts->input_dev);\n\n"
+              "    JD_D(\"%s:end\\n\", __func__);\n"
+              "}\n\n"
+              "static int jadard_report_data",
+              "    input_sync(ts->input_dev);\n"
+              "    jadard_double_tap_sleep(ts);\n\n"
+              "    JD_D(\"%s:end\\n\", __func__);\n"
+              "}\n\n"
+              "static int jadard_report_data",
+          )
 
           watchdog = r'''
           static void jadard_health_work_function(struct work_struct *work)
