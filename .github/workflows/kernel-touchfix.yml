@@ -18,7 +18,7 @@ env:
   IVER_RELEASE_ASSET: 4.14.199-a03_IverCoder-202508171328-KSUNext.7z
   IVER_RELEASE_SHA256: 93d637168261833003bc680c92646c7d8f2b71d4ca9f8843a0f82855ede5fd9f
   KSU_TAG: v1.0.9
-  OUT_NAME: A03-touchfix-v4.4-Jadard-DT2W-DT2S-Anywhere-KSUNext
+  OUT_NAME: A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext
 
 jobs:
   build:
@@ -257,90 +257,13 @@ jobs:
               "    JD_I(\"%s:Double click gesture default on in D85 version\\n\", __func__);\n"
               "#endif\n",
               "    jadard_enable_gesture_wakeup();\n"
-              "    JD_I(\"%s: Double-click wake forced on by touchfix v4\\n\", __func__);\n",
+              "    JD_I(\"%s: Double-click wake forced on by touchfix v4.5\\n\", __func__);\n",
           )
 
-          # Add double-tap-to-sleep across the full active screen, as requested.
-          # The gesture still requires one finger, two short taps, limited movement,
-          # and both taps near the same coordinates.
-          dt2s = r'''
-          static bool jd_dt2s_tracking;
-          static int jd_dt2s_down_x;
-          static int jd_dt2s_down_y;
-          static unsigned long jd_dt2s_down_jiffies;
-          static unsigned long jd_dt2s_first_tap_jiffies;
-          static int jd_dt2s_first_x;
-          static int jd_dt2s_first_y;
-
-          static void jadard_double_tap_sleep(struct jadard_ts_data *ts)
-          {
-              int i;
-              if (ts->suspended || !ts->tp_on_off)
-                  return;
-
-              for (i = 0; i < pjadard_ic_data->JD_MAX_PT; i++) {
-                  if (pjadard_host_data->event[i] == JD_DOWN_EVENT) {
-                      jd_dt2s_tracking =
-                          (pjadard_host_data->finger_num == 1);
-                      jd_dt2s_down_x = pjadard_host_data->x[i];
-                      jd_dt2s_down_y = pjadard_host_data->y[i];
-                      jd_dt2s_down_jiffies = jiffies;
-                  } else if (pjadard_host_data->event[i] == JD_CONTACT_EVENT &&
-                             jd_dt2s_tracking) {
-                      if (abs(pjadard_host_data->x[i] - jd_dt2s_down_x) > 60 ||
-                          abs(pjadard_host_data->y[i] - jd_dt2s_down_y) > 60)
-                          jd_dt2s_tracking = false;
-                  } else if (pjadard_host_data->event[i] == JD_UP_EVENT &&
-                             jd_dt2s_tracking) {
-                      bool short_tap = time_before(jiffies,
-                          jd_dt2s_down_jiffies + msecs_to_jiffies(260));
-                      bool second_tap = jd_dt2s_first_tap_jiffies &&
-                          time_before(jiffies,
-                              jd_dt2s_first_tap_jiffies + msecs_to_jiffies(450)) &&
-                          abs(jd_dt2s_down_x - jd_dt2s_first_x) <= 100 &&
-                          abs(jd_dt2s_down_y - jd_dt2s_first_y) <= 100;
-
-                      jd_dt2s_tracking = false;
-                      if (!short_tap) {
-                          jd_dt2s_first_tap_jiffies = 0;
-                          continue;
-                      }
-
-                      if (second_tap) {
-                          input_report_key(ts->input_dev, KEY_POWER, 1);
-                          input_sync(ts->input_dev);
-                          input_report_key(ts->input_dev, KEY_POWER, 0);
-                          input_sync(ts->input_dev);
-                          jd_dt2s_first_tap_jiffies = 0;
-                          JD_I("Double tap anywhere: KEY_POWER\n");
-                      } else {
-                          jd_dt2s_first_tap_jiffies = jiffies;
-                          jd_dt2s_first_x = jd_dt2s_down_x;
-                          jd_dt2s_first_y = jd_dt2s_down_y;
-                      }
-                  }
-              }
-          }
-
-          '''
-          replace_once(
-              common,
-              "void jadard_report_points(struct jadard_ts_data *ts)\n",
-              dt2s + "void jadard_report_points(struct jadard_ts_data *ts)\n",
-          )
-
-          replace_once(
-              common,
-              "    input_sync(ts->input_dev);\n\n"
-              "    JD_D(\"%s:end\\n\", __func__);\n"
-              "}\n\n"
-              "static int jadard_report_data",
-              "    input_sync(ts->input_dev);\n"
-              "    jadard_double_tap_sleep(ts);\n\n"
-              "    JD_D(\"%s:end\\n\", __func__);\n"
-              "}\n\n"
-              "static int jadard_report_data",
-          )
+          # Deliberately do not implement double-tap-to-sleep in the touch driver.
+          # The kernel cannot distinguish a blank launcher area from PIN keys,
+          # keyboard keys, icons, or app controls. Home-screen-only DT2S must be
+          # handled by the launcher, which has the required UI context.
 
           watchdog = r'''
           static void jadard_health_work_function(struct work_struct *work)
@@ -536,7 +459,7 @@ jobs:
             ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- a03_cis_open_defconfig
 
           ./scripts/config --file out/.config \
-            --set-str LOCALVERSION '-a03_IverCoder-touchfix-v4.4-Jadard-KSUNext'
+            --set-str LOCALVERSION '-a03_IverCoder-touchfix-v4.5-Jadard-KSUNext'
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO
           ./scripts/config --file out/.config -e OVERLAY_FS
           ./scripts/config --file out/.config -e KSU
@@ -663,8 +586,9 @@ jobs:
             echo "KernelSU Next: ${KSU_TAG}"
             echo "Touch driver confirmed at runtime: jadard-touchscreen"
             echo "Jadard source implementation: JD9365T"
-            echo "Patch v4.4: double-tap-to-sleep across the full active screen"
-            echo "Patch v4.4: one-finger/timing/movement filters retained"
+            echo "Patch v4.5: persistent double-tap-to-wake only"
+            echo "Safety: kernel DT2S removed; launcher handles blank-home-area DT2S"
+            echo "Safety: PIN, keyboard, icons and app controls cannot trigger kernel sleep"
             echo "Watchdog: 5-second JD9365T register liveness probe; recover after 2 failures"
             echo "Recovery: HW reset + zero-flash firmware reload + restore settings + IRQ enable"
             echo "Novatek/Chipone: unchanged"
