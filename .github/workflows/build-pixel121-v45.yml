@@ -1,0 +1,211 @@
+name: Build Pixel Experience 12.1 Lite + kernel v4.5 Safe
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-pixel121-v45.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: pixel121-lite-a035f-bit9-v45
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: pixel-experience-12.1-a035f-bit9-v4.5-safe
+  ROM_NAME: PixelExperience-12.1-Slim-A035F-BIT9
+  GSI_URL: https://github.com/ponces/treble_build_pe/releases/download/v416/PixelExperience_arm64-ab-slim-12.1-20221117-UNOFFICIAL.img.xz
+  KERNEL_URL: https://github.com/mysmallstar12/Custom-Rom-Builder-For-Samsung-Galaxy-A03/releases/download/lineage20-a035f-bit9-touchfix-v4.5-safe/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+  VOLUME_APK_URL: https://github.com/SimonMarquis/Android-SoundQuickSettings/releases/download/1.1.0/app-release.apk
+  LAWNCHAIR_APK_URL: https://github.com/LawnchairLauncher/lawnchair/releases/download/v12.1.0-alpha.4/Lawnchair.12.1.0.Alpha.4.apk
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends aria2 xz-utils p7zip-full file android-sdk-libsparse-utils
+          git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
+          cd lpbinary
+          bash install.sh
+
+      - name: Download Pixel Experience 12.1 Slim
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          aria2c -x16 -s16 -k1M --file-allocation=none --max-tries=10 --retry-wait=3 \
+            --allow-overwrite=true --auto-file-renaming=false "$GSI_URL" -o system.img.xz
+          xz -t system.img.xz
+          unxz system.img.xz
+          test -s system.img
+          file system.img
+          ls -lh system.img
+
+      - name: Download A035F BIT9 stock partitions
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          for image in vendor product system_ext; do
+            aria2c -x16 -s16 -k1M --file-allocation=none --max-tries=10 --retry-wait=3 \
+              --allow-overwrite=true --auto-file-renaming=false \
+              "https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1/${image}.img" \
+              -o "${image}.img"
+            test -s "${image}.img"
+          done
+
+      - name: Validate partition budget and build Odin super
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          SYSTEM_SIZE=$(stat -c%s system.img)
+          VENDOR_SIZE=$(stat -c%s vendor.img)
+          PRODUCT_SIZE=$(stat -c%s product.img)
+          SYSTEM_EXT_SIZE=$(stat -c%s system_ext.img)
+          TOTAL=$((SYSTEM_SIZE + VENDOR_SIZE + PRODUCT_SIZE + SYSTEM_EXT_SIZE))
+          echo "Dynamic partition total: $TOTAL / 6761218048"
+          test "$TOTAL" -le 6761218048
+          ./lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:${SYSTEM_SIZE}:main --image system=system.img \
+            --partition vendor:readonly:${VENDOR_SIZE}:main --image vendor=vendor.img \
+            --partition product:readonly:${PRODUCT_SIZE}:main --image product=product.img \
+            --partition system_ext:readonly:${SYSTEM_EXT_SIZE}:main --image system_ext=system_ext.img \
+            --sparse --output super.img
+          test -s super.img
+          tar --format=ustar -cf super.tar super.img
+
+      - name: Compress ROM below GitHub asset limit
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          7z a -mx=7 -v1900m "${ROM_NAME}-super.7z" super.tar
+          test -s "${ROM_NAME}-super.7z.001"
+          rm -f super.img super.tar system.img vendor.img product.img system_ext.img
+          ls -lh "${ROM_NAME}-super.7z".*
+
+      - name: Add kernel v4.5 Safe and Pixel utility module
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          aria2c -x8 -s8 --file-allocation=none --max-tries=8 \
+            --allow-overwrite=true --auto-file-renaming=false \
+            "$KERNEL_URL" -o A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+          test -s A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+          tar -tf A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar | grep -qx 'boot.img'
+
+          aria2c -x4 -s4 --file-allocation=none --max-tries=8 \
+            --allow-overwrite=true --auto-file-renaming=false \
+            "$VOLUME_APK_URL" -o SoundQuickSettings-1.1.0.apk
+          aria2c -x4 -s4 --file-allocation=none --max-tries=8 \
+            --allow-overwrite=true --auto-file-renaming=false \
+            "$LAWNCHAIR_APK_URL" -o Lawnchair-12.1-Alpha4.apk
+          test -s SoundQuickSettings-1.1.0.apk
+          test -s Lawnchair-12.1-Alpha4.apk
+
+          mkdir -p pixel-utils/system/app/SoundQuickSettings
+          mkdir -p pixel-utils/system/app/A03Lawnchair
+          cp SoundQuickSettings-1.1.0.apk pixel-utils/system/app/SoundQuickSettings/SoundQuickSettings.apk
+          cp Lawnchair-12.1-Alpha4.apk pixel-utils/system/app/A03Lawnchair/A03Lawnchair.apk
+          printf '%s\n' \
+            'id=a03_pixel_utilities' \
+            'name=A03 Pixel Utilities - Volume and Safe Home DT2S' \
+            'version=1.0' \
+            'versionCode=1' \
+            'author=mysmallstar12' \
+            'description=Adds a Volume Quick Settings tile and Lawnchair 12.1 for safe empty-home double-tap-to-sleep.' \
+            > pixel-utils/module.prop
+          printf '%s\n' \
+            '#!/system/bin/sh' \
+            'MODDIR=${0%/*}' \
+            'set_perm_recursive "$MODDIR/system" 0 0 0755 0644' \
+            > pixel-utils/set_permissions.sh
+          chmod 0755 pixel-utils/set_permissions.sh
+          (
+            cd pixel-utils
+            zip -r9 ../A03-Pixel-Utilities-Volume-DT2S-KSU-Magisk.zip .
+          )
+
+      - name: Write flash instructions and checksums
+        working-directory: lpbinary/binary
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'Samsung Galaxy A03 SM-A035F BIT9 / A035FXXS9CYG1' \
+            'Pixel Experience 12.1 Slim + kernel v4.5 Safe' \
+            '' \
+            'FLASH ROM:' \
+            '1. Download every numbered Pixel ROM part into one folder.' \
+            '2. Open only .7z.001 with 7-Zip and extract super.tar.' \
+            '3. Odin AP: flash super.tar.' \
+            '4. Enter recovery and factory reset / format data.' \
+            '5. Finish first boot, then return to Download Mode.' \
+            '6. Odin AP: flash A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar.' \
+            '' \
+            'VOLUME + SAFE DOUBLE-TAP SLEEP:' \
+            '7. KernelSU Manager > Modules > Install from storage.' \
+            '8. Choose A03-Pixel-Utilities-Volume-DT2S-KSU-Magisk.zip and reboot.' \
+            '9. Press Home, choose Lawnchair as Always.' \
+            '10. Lawnchair Settings > Gestures > Double tap > Sleep / Lock screen.' \
+            '11. Pull Quick Settings down > Edit > add the Volume tile.' \
+            '12. Tap Volume to display the volume slider; long-press opens Sound settings.' \
+            '' \
+            'BEHAVIOUR:' \
+            '- Screen off: kernel double-tap wakes the display, including after first unlock.' \
+            '- Screen on: only double-tapping an empty Home area sleeps.' \
+            '- PIN, keyboard, icons and app controls cannot trigger kernel sleep.' \
+            '' \
+            'NOTES:' \
+            '- Android 12.1 Slim is substantially lighter than the previous Android 16 HyperOS GSI.' \
+            '- Google Play is included.' \
+            '- Pixel Android 12.1 does not support a permanent volume bar beside brightness; the Volume tile opens the slider.' \
+            '- Keep automatic/adaptive brightness disabled initially if the Samsung vendor reports an incorrect light value.' \
+            '- Do not combine super.tar and the kernel TAR.' \
+            '- Kernel v4.5 Safe targets Jadard JD9365T.' \
+            '- Keep complete stock BIT9 firmware before flashing.' \
+            > FLASH-INSTRUCTIONS.txt
+
+          sha256sum "${ROM_NAME}-super.7z".* \
+            A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar \
+            A03-Pixel-Utilities-Volume-DT2S-KSU-Magisk.zip \
+            SoundQuickSettings-1.1.0.apk Lawnchair-12.1-Alpha4.apk \
+            > SHA256SUMS.txt
+
+      - name: Publish permanent release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Pixel Experience 12.1 Lite A035F BIT9 + kernel v4.5 Safe
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Pixel Experience 12.1 Slim GSI package for Samsung Galaxy A03 SM-A035F BIT9.
+            Android 12.1 is substantially lighter than the Android 16 HyperOS build and Google Play is included.
+
+            Includes the separate Jadard JD9365T kernel v4.5 Safe with persistent double-tap-to-wake, touch recovery watchdog and KernelSU Next.
+            The optional utilities module provides Lawnchair 12.1 for safe empty-Home double-tap-to-sleep and a Volume Quick Settings tile.
+
+            Pixel Android 12.1 cannot place a permanent second slider beside brightness without rebuilding SystemUI; tapping the supplied Volume tile opens the real volume slider.
+            Download every numbered ROM part and extract beginning with .001.
+          files: |
+            lpbinary/binary/${{ env.ROM_NAME }}-super.7z.*
+            lpbinary/binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+            lpbinary/binary/A03-Pixel-Utilities-Volume-DT2S-KSU-Magisk.zip
+            lpbinary/binary/SoundQuickSettings-1.1.0.apk
+            lpbinary/binary/Lawnchair-12.1-Alpha4.apk
+            lpbinary/binary/FLASH-INSTRUCTIONS.txt
+            lpbinary/binary/SHA256SUMS.txt
