@@ -1,0 +1,238 @@
+name: Build LineageOS 20 GApps Complete A03 v4.5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-lineage20-gapps-v45-complete.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lineage20-gapps-a035f-bit9-v45-complete
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: lineage20-gapps-a035f-bit9-v4.5-complete
+  GSI_URL: https://downloads.sourceforge.net/project/andyyan-gsi/lineage-20-td/lineage-20.0-20251021-UNOFFICIAL-arm64_bgN-signed.img.gz
+  KERNEL_URL: https://github.com/mysmallstar12/Custom-Rom-Builder-For-Samsung-Galaxy-A03/releases/download/lineage20-a035f-bit9-touchfix-v4.5-safe/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+  TAPLOCK_URL: https://f-droid.org/repo/com.ah.taplock_19.apk
+  TAPLOCK_SHA256: 5ee2b17290097dc2d6eb4e2f33c2170dc5061c8929f2a2a633caac4ab735b236
+  UNIVERSAL_INSTALLER_URL: https://f-droid.org/repo/app.pwhs.universalinstaller_42.apk
+  UNIVERSAL_INSTALLER_SHA256: 01d3b7eb76b1c0c221502004506e5f9eef670157a6d07306661e75271e905840
+  VOLUME_URL: https://f-droid.org/repo/fr.smarquis.soundquicksettings_11000.apk
+  VOLUME_SHA256: 039306979cf26dd0acede7d56bbdec347519a1585300a2edd09d45cfaf27ecd8
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 210
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            aria2 gzip p7zip-full file e2fsprogs attr \
+            android-sdk-libsparse-utils aapt unzip
+          git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
+          cd lpbinary
+          bash install.sh
+
+      - name: Download GSI and bundled utilities in parallel
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          download() {
+            aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+              --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=10 --retry-wait=3 "$1" -o "$2"
+          }
+          download "${GSI_URL}" system.img.gz & P1=$!
+          download "${TAPLOCK_URL}" TapLock.apk & P2=$!
+          download "${UNIVERSAL_INSTALLER_URL}" UniversalInstaller.apk & P3=$!
+          download "${VOLUME_URL}" SoundQuickSettings.apk & P4=$!
+          wait "$P1" "$P2" "$P3" "$P4"
+
+          gzip -t system.img.gz
+          gunzip system.img.gz
+          test -s system.img
+          echo "${TAPLOCK_SHA256}  TapLock.apk" | sha256sum -c -
+          echo "${UNIVERSAL_INSTALLER_SHA256}  UniversalInstaller.apk" | sha256sum -c -
+          echo "${VOLUME_SHA256}  SoundQuickSettings.apk" | sha256sum -c -
+          test "$(aapt dump badging TapLock.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")" = com.ah.taplock
+          test "$(aapt dump badging UniversalInstaller.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")" = app.pwhs.universalinstaller
+          test "$(aapt dump badging SoundQuickSettings.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")" = fr.smarquis.soundquicksettings
+
+      - name: Integrate TapLock volume tile and XAPK installer
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if file system.img | grep -qi 'Android sparse image'; then
+            simg2img system.img system.raw.img
+            mv system.raw.img system.img
+          fi
+
+          set +e
+          sudo e2fsck -fy system.img
+          RC=$?
+          set -e
+          test "$RC" -le 1
+          truncate -s +512M system.img
+          sudo resize2fs system.img
+          sudo e2fsck -fy -E unshare_blocks system.img || true
+
+          mkdir system-mnt
+          sudo mount -o loop,rw system.img system-mnt
+          trap 'sudo umount system-mnt || true' EXIT
+          ROOT=system-mnt
+          if [ -d system-mnt/system/app ]; then ROOT=system-mnt/system; fi
+
+          install_system_app() {
+            local name="$1" apk="$2" dir="${ROOT}/app/${name}"
+            sudo mkdir -p "$dir"
+            sudo cp "$apk" "$dir/${name}.apk"
+            sudo chown -R 0:0 "$dir"
+            sudo chmod 0755 "$dir"
+            sudo chmod 0644 "$dir/${name}.apk"
+            sudo setfattr -n security.selinux -v 'u:object_r:system_file:s0' "$dir" || true
+            sudo setfattr -n security.selinux -v 'u:object_r:system_file:s0' "$dir/${name}.apk" || true
+          }
+
+          install_system_app TapLock TapLock.apk
+          install_system_app UniversalInstaller UniversalInstaller.apk
+          install_system_app SoundQuickSettings SoundQuickSettings.apk
+          sync
+          sudo umount system-mnt
+          trap - EXIT
+          rm -rf system-mnt TapLock.apk UniversalInstaller.apk SoundQuickSettings.apk
+
+          sudo e2fsck -fy system.img
+          sudo resize2fs -M system.img
+          sudo e2fsck -fy system.img
+          file system.img
+
+      - name: Download BIT9 stock partitions in parallel
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          download_partition() {
+            aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+              --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=10 --retry-wait=3 \
+              "https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1/$1.img" \
+              -o "$1.img"
+          }
+          download_partition vendor & P1=$!
+          download_partition product & P2=$!
+          download_partition system_ext & P3=$!
+          wait "$P1" "$P2" "$P3"
+          test -s vendor.img
+          test -s product.img
+          test -s system_ext.img
+
+      - name: Verify image sizes and build Odin super
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SYSTEM_SIZE=$(stat -c%s system.img)
+          VENDOR_SIZE=$(stat -c%s vendor.img)
+          PRODUCT_SIZE=$(stat -c%s product.img)
+          EXT_SIZE=$(stat -c%s system_ext.img)
+          TOTAL=$((SYSTEM_SIZE + VENDOR_SIZE + PRODUCT_SIZE + EXT_SIZE))
+          test "$TOTAL" -lt 6761218048
+
+          ./lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:${SYSTEM_SIZE}:main --image system=system.img \
+            --partition vendor:readonly:${VENDOR_SIZE}:main --image vendor=vendor.img \
+            --partition product:readonly:${PRODUCT_SIZE}:main --image product=product.img \
+            --partition system_ext:readonly:${EXT_SIZE}:main --image system_ext=system_ext.img \
+            --sparse --output super.img
+
+          tar -cf super.tar super.img
+          7z a -mx=7 -v1900m LineageOS-20-GApps-A035F-BIT9-v4.5-Complete.7z super.tar
+          test -s LineageOS-20-GApps-A035F-BIT9-v4.5-Complete.7z.001
+          rm -f super.img super.tar system.img vendor.img product.img system_ext.img
+
+      - name: Download verified kernel v4.5 with multiple connections
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+            --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+            --max-tries=10 --retry-wait=3 "${KERNEL_URL}" \
+            -o A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+          tar -tf A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar | grep -qx boot.img
+
+      - name: Create flash guide and checksums
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > FLASH-INSTRUCTIONS.txt <<'EOF'
+          SAMSUNG GALAXY A03 SM-A035F BIT9 - A035FXXS9CYG1
+          LINEAGEOS 20 ANDROID 13 + GOOGLE PLAY + KERNEL v4.5 SAFE
+
+          Tich hop san:
+          - Google Play va Google Play Services cua GSI bgN.
+          - TapLock 1.15: widget cham hai lan de tat man hinh Home.
+          - Sound Quick Settings: o am luong ao tren Quick Settings.
+          - Universal Installer 1.18.0: cai APK, APKS va XAPK.
+          - Kernel v4.5 Safe: Jadard touch watchdog, DT2W va KernelSU Next.
+
+          FLASH:
+          1. Tai tat ca file .7z.001, .002... vao cung thu muc.
+          2. Mo .7z.001 bang 7-Zip, giai nen super.tar.
+          3. Odin: chon super.tar tai AP; KHONG chon Re-Partition; bam Start.
+          4. Vao recovery, factory reset/format data; sau do khoi dong ROM.
+          5. Vao Download Mode, Odin AP flash file kernel v4.5 .tar.
+          6. Khoi dong lai, cho Google Play khoi tao 5 phut roi dang nhap.
+
+          CAI DAT SAU KHI KHOI DONG:
+          - TapLock: them widget vao Home va cap quyen Tro nang.
+          - Am luong ao: sua Quick Settings va them o Volume.
+          - Facebook, TikTok va Chrome: cai tu CH Play de giu chu ky chinh chu,
+            nhan cap nhat binh thuong va tranh loi dang nhap cua APK dong goi lai.
+
+          Chi dung cho SM-A035F BIT9 voi cam ung Jadard JD9365T.
+          Khong khoa lai bootloader. Sao luu du lieu va firmware goc truoc khi flash.
+          EOF
+
+          sha256sum LineageOS-20-GApps-A035F-BIT9-v4.5-Complete.7z.* \
+            A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar > SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LineageOS 20 GApps Complete A035F BIT9 + kernel v4.5
+          prerelease: false
+          fail_on_unmatched_files: true
+          body: |
+            Lightweight Android 13 build for Samsung Galaxy A03 SM-A035F BIT9.
+            Google Play is integrated directly in the signed non-vndklite bgN GSI.
+            Includes TapLock, Sound Quick Settings and Universal Installer.
+            Kernel v4.5 Safe adds Jadard touch recovery, persistent DT2W and KernelSU Next.
+            Facebook, TikTok and Chrome should be installed from Google Play after setup so their official signatures and updates remain intact.
+          files: |
+            lpbinary/binary/LineageOS-20-GApps-A035F-BIT9-v4.5-Complete.7z.*
+            lpbinary/binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+            lpbinary/binary/FLASH-INSTRUCTIONS.txt
+            lpbinary/binary/SHA256SUMS.txt
