@@ -87,9 +87,15 @@ jobs:
           RC=$?
           set -e
           test "$RC" -le 1
-          truncate -s +512M system.img
+          # Android GSIs use ext4 shared blocks. Give e2fsck enough temporary
+          # space to materialize every shared block before mounting read-write.
+          truncate -s +3G system.img
           sudo resize2fs system.img
-          sudo e2fsck -fy -E unshare_blocks system.img || true
+          set +e
+          sudo e2fsck -fy -E unshare_blocks system.img
+          RC=$?
+          set -e
+          test "$RC" -le 1
 
           mkdir system-mnt
           sudo mount -o loop,rw system.img system-mnt
