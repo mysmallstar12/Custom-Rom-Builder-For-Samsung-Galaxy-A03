@@ -1,0 +1,293 @@
+name: Build A03 LiteOS 13 BIT9 v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-a03-liteos-13-v1.yml'
+      - 'scripts/apply-a03-liteos-patches.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: a03-liteos-13-bit9-v1
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: a03-liteos-13-bit9-v1-test
+  BUILD_UNIFIED_COMMIT: ba21a0d381b988cef51387896a603cc2871045b8
+  PATCHES_UNIFIED_COMMIT: 1865fc784bc72a2d82fb938f18edb66af90ba306
+  MINDTHEGAPPS_COMMIT: e8c101ba0e90b705ec1428da8359401d9d8c7c18
+  LPTOOLS_COMMIT: da4dd13276e40d524286f343c4d59c7c5dfe8594
+  KERNEL_URL: https://github.com/mysmallstar12/Custom-Rom-Builder-For-Samsung-Galaxy-A03/releases/download/lineage20-a035f-bit9-touchfix-v4.5-safe/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+  STOCK_BASE_URL: https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout ROM configuration
+        uses: actions/checkout@v4
+        with:
+          path: rom-config
+
+      - name: Maximize Android build space
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c
+        with:
+          root-reserve-mb: 6144
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Install Android build and packaging tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev aria2 p7zip-full \
+            android-sdk-libsparse-utils e2fsprogs file attr
+          git lfs install
+          mkdir -p "$HOME/bin"
+          curl --fail --location --retry 5 \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            --output "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Initialize pinned LineageOS 20 light source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir android
+          cd android
+          repo init \
+            -u https://github.com/LineageOS/android.git \
+            -b lineage-20.0 \
+            --git-lfs \
+            --depth=1
+
+          fetch_exact() {
+            local url="$1" commit="$2" path="$3"
+            git init "$path"
+            git -C "$path" remote add origin "$url"
+            git -C "$path" fetch --depth=1 origin "$commit"
+            git -C "$path" checkout --detach FETCH_HEAD
+            test "$(git -C "$path" rev-parse HEAD)" = "$commit"
+          }
+
+          fetch_exact \
+            https://github.com/AndyCGYan/lineage_build_unified.git \
+            "${BUILD_UNIFIED_COMMIT}" lineage_build_unified
+          fetch_exact \
+            https://github.com/AndyCGYan/lineage_patches_unified.git \
+            "${PATCHES_UNIFIED_COMMIT}" lineage_patches_unified
+
+          # The upstream helper syncs, applies the normal Lineage GSI patches,
+          # then this hook applies only the A03 LiteOS source changes.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('lineage_build_unified/buildbot_unified.sh')
+          s = p.read_text()
+          old = '    finalize_${MODE}\n'
+          new = (
+              '    echo "Applying A03 LiteOS device-specific source changes"\n'
+              '    git -C vendor/gapps fetch --depth=1 https://gitlab.com/MindTheGapps/vendor_gapps.git "${MINDTHEGAPPS_COMMIT}"\n'
+              '    git -C vendor/gapps checkout --detach "${MINDTHEGAPPS_COMMIT}"\n'
+              '    test "$(git -C vendor/gapps rev-parse HEAD)" = "${MINDTHEGAPPS_COMMIT}"\n'
+              '    python3 "${A03_CONFIG_DIR}/scripts/apply-a03-liteos-patches.py" "$PWD"\n'
+              '    finalize_${MODE}\n'
+          )
+          if s.count(old) != 1:
+              raise SystemExit('buildbot injection point changed')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Build LineageOS 20 GSI with all CPU cores
+        shell: bash
+        env:
+          A03_CONFIG_DIR: ${{ github.workspace }}/rom-config
+          BUILD_USERNAME: a03lite
+          BUILD_HOSTNAME: github-actions
+          USE_CCACHE: '0'
+        run: |
+          set -o pipefail
+          cd android
+          bash lineage_build_unified/buildbot_unified.sh treble 64GN \
+            2>&1 | tee "$GITHUB_WORKSPACE/a03-liteos-build.log"
+
+      - name: Verify promised features and minimal Google set
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd android
+          grep -q 'a03_volume_slider' \
+            packages/SystemUI/res/layout/quick_settings_brightness_dialog.xml
+          grep -q 'setStreamVolume(AudioManager.STREAM_MUSIC' \
+            packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessSliderController.java
+          grep -q 'mPowerManager.goToSleep' \
+            packages/apps/Trebuchet/src/com/android/launcher3/touch/WorkspaceTouchListener.java
+          grep -q 'android.permission.DEVICE_POWER' \
+            packages/apps/Trebuchet/AndroidManifest-common.xml
+          ! grep -Eq 'MarkupGoogle|SpeechServicesByGoogle|talkback|Velvet|SetupWizard' \
+            vendor/gapps/arm64/arm64-vendor.mk
+          ! grep -Eq 'PrebuiltExchange3Google|AndroidAutoStub|GoogleFeedback|GoogleRestore' \
+            vendor/gapps/common/common-vendor.mk
+          test -s "$HOME/build-output/lineage-20.0-"*'-UNOFFICIAL-gsi_arm64_gN.img'
+          repo manifest -r -o "$GITHUB_WORKSPACE/pinned-source-manifest.xml"
+
+      - name: Fetch BIT9 stock partitions kernel and LP tools in parallel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p package/binary
+          cd package
+
+          git init lptools
+          git -C lptools remote add origin \
+            https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git
+          git -C lptools fetch --depth=1 origin "${LPTOOLS_COMMIT}"
+          git -C lptools checkout --detach FETCH_HEAD
+          test "$(git -C lptools rev-parse HEAD)" = "${LPTOOLS_COMMIT}"
+          (cd lptools && bash install.sh)
+
+          download() {
+            aria2c --max-connection-per-server=16 --split=16 \
+              --min-split-size=1M --file-allocation=none \
+              --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=10 --retry-wait=3 "$1" -o "$2"
+          }
+
+          download "${STOCK_BASE_URL}/vendor.img" binary/vendor.img & P1=$!
+          download "${STOCK_BASE_URL}/product.img" binary/product.img & P2=$!
+          download "${STOCK_BASE_URL}/system_ext.img" binary/system_ext.img & P3=$!
+          download "${KERNEL_URL}" \
+            binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar & P4=$!
+          wait "$P1" "$P2" "$P3" "$P4"
+
+          test -s binary/vendor.img
+          test -s binary/product.img
+          test -s binary/system_ext.img
+          tar -tf binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar \
+            | grep -qx boot.img
+
+      - name: Build BIT9 Odin super package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd package/binary
+          cp "$HOME/build-output/lineage-20.0-"*'-UNOFFICIAL-gsi_arm64_gN.img' system.img
+
+          if file system.img | grep -qi 'Android sparse image'; then
+            simg2img system.img system.raw.img
+            mv system.raw.img system.img
+          fi
+
+          SYSTEM_SIZE=$(stat -c%s system.img)
+          VENDOR_SIZE=$(stat -c%s vendor.img)
+          PRODUCT_SIZE=$(stat -c%s product.img)
+          EXT_SIZE=$(stat -c%s system_ext.img)
+          TOTAL=$((SYSTEM_SIZE + VENDOR_SIZE + PRODUCT_SIZE + EXT_SIZE))
+          test "$TOTAL" -lt 6761218048
+
+          ../lptools/binary/lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:${SYSTEM_SIZE}:main --image system=system.img \
+            --partition vendor:readonly:${VENDOR_SIZE}:main --image vendor=vendor.img \
+            --partition product:readonly:${PRODUCT_SIZE}:main --image product=product.img \
+            --partition system_ext:readonly:${EXT_SIZE}:main --image system_ext=system_ext.img \
+            --sparse --output super.img
+
+          tar -cf A03-LiteOS-13-BIT9-v1-super.tar super.img
+          7z a -mx=7 -v1900m A03-LiteOS-13-BIT9-v1-Odin.7z \
+            A03-LiteOS-13-BIT9-v1-super.tar
+
+          test -s A03-LiteOS-13-BIT9-v1-Odin.7z.001
+          sha256sum A03-LiteOS-13-BIT9-v1-Odin.7z.* \
+            A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar \
+            > SHA256SUMS.txt
+
+      - name: Create release notes and test checklist
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp pinned-source-manifest.xml package/binary/
+          cp a03-liteos-build.log package/binary/
+          cat > package/binary/FLASH-AND-TEST.txt <<'EOF'
+          A03 LITEOS 13 v1 TEST - SM-A035F BIT9 / A035FXXS9CYG1
+
+          DA TICH HOP:
+          - LineageOS 20 / Android 13, build tu ma nguon.
+          - CH Play Core: Play Store, Play services, Google Services Framework,
+            Google Partner Setup va dong bo danh ba/lich. Khong Google Search,
+            Android Auto, TalkBack, Google Feedback, Setup Wizard hay app quang cao.
+          - Thanh am luong media nam canh thanh do sang trong Quick Settings.
+          - Cham dup vung trong Home de ngu; icon, PIN, ban phim va app khong bat cu chi.
+          - Kernel v4.5 Safe: Jadard watchdog, DT2W sau mo khoa, chan wake/sleep lap.
+
+          FLASH SACH (SE XOA DU LIEU):
+          1. Chi dung cho Samsung Galaxy A03 SM-A035F BIT9.
+          2. Giai nen tat ca phan .7z tu file .001 de lay file super.tar.
+          3. Odin: AP = A03-LiteOS-13-BIT9-v1-super.tar; KHONG Re-Partition; Start.
+          4. Vao recovery va factory reset/format data, sau do khoi dong ROM.
+          5. Vao Download Mode; Odin AP flash kernel v4.5 .tar; khoi dong lai.
+          6. Khong khoa lai bootloader.
+
+          TEST TRUOC KHI DUNG CHINH:
+          - Goi/nhan cuoc goi, SMS, Wi-Fi, Bluetooth, camera, loa/mic.
+          - Dang nhap CH Play, tai mot app va khoi dong lai may.
+          - Thu thanh am luong Quick Settings va phim am luong vat ly.
+          - Thu cham dup danh thuc truoc/sau mo khoa, 10 lan lien tiep.
+          - Thu cham dup nen Home de ngu; thu cham icon, PIN, ban phim va trong app
+            de xac nhan khong tat nham.
+
+          Day la v1 TEST. Chi goi la on ding sau khi vuot qua danh sach tren tren
+          chinh may A03 cua ban. Hay giu san firmware goc va ban Lineage on dinh.
+          EOF
+
+      - name: Publish separate prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          if gh release view "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease \
+            --title "A03 LiteOS 13 BIT9 v1 TEST" \
+            --notes "Source-built Android 13 test ROM for SM-A035F BIT9. Integrated minimal Google Play core, SystemUI media-volume slider beside brightness, safe empty-Home double-tap sleep, and separate kernel v4.5 touchfix. Keep the previous stable ROM until on-device validation is complete." \
+            package/binary/A03-LiteOS-13-BIT9-v1-Odin.7z.* \
+            package/binary/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar \
+            package/binary/FLASH-AND-TEST.txt \
+            package/binary/SHA256SUMS.txt \
+            package/binary/pinned-source-manifest.xml \
+            package/binary/a03-liteos-build.log
+
+      - name: Upload build log when the job fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a03-liteos-v1-failure-log
+          path: a03-liteos-build.log
+          if-no-files-found: ignore
+          retention-days: 14
