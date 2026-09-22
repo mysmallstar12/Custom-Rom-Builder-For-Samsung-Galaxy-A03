@@ -22,7 +22,7 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: '8.9'
       - name: Unpack source
         run: unzip -q volume-bar-apk.zip
       - name: Build signed installable APK
