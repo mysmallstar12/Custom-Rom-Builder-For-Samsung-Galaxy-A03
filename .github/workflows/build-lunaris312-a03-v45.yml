@@ -1,0 +1,230 @@
+name: Build Lunaris 3.12 GApps A03 BIT9 v4.5 Kit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lunaris-312-a035f-bit9-v45
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: lunaris-3.12-a035f-bit9-v4.5-test
+  GSI_NAME: Lunaris-3.12-GSI_treble_arm64-ab-GAPPS-Official-20260917.img.xz
+  GSI_URL: https://github.com/Doze-off/Lunaris-AOSP_gsi/releases/download/2026-09-17/Lunaris-3.12-GSI_treble_arm64-ab-GAPPS-Official-20260917.img.xz
+  GSI_SHA256: 389908ed6e81b5abaaaea45b49b5142dd7f76c355ed44b5a4999e2ace3e30f54
+  KERNEL_URL: https://github.com/mysmallstar12/Custom-Rom-Builder-For-Samsung-Galaxy-A03/releases/download/lineage20-a035f-bit9-touchfix-v4.5-safe/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+  TAPLOCK_URL: https://f-droid.org/repo/com.ah.taplock_19.apk
+  TAPLOCK_SHA256: 5ee2b17290097dc2d6eb4e2f33c2170dc5061c8929f2a2a633caac4ab735b236
+  STOCK_BASE_URL: https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1
+  LPTOOLS_COMMIT: da4dd13276e40d524286f343c4d59c7c5dfe8594
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
+
+      - name: Create safe workspace
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c
+        with:
+          root-reserve-mb: 12288
+          swap-size-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            aria2 xz-utils p7zip-full file android-sdk-libsparse-utils \
+            e2fsprogs aapt git
+
+          git init lptools
+          git -C lptools remote add origin \
+            https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git
+          git -C lptools fetch --depth=1 origin "${LPTOOLS_COMMIT}"
+          git -C lptools checkout --detach FETCH_HEAD
+          test "$(git -C lptools rev-parse HEAD)" = "${LPTOOLS_COMMIT}"
+          (cd lptools && bash install.sh)
+          mkdir -p work release
+
+      - name: Download GSI stock partitions kernel and TapLock in parallel
+        shell: bash
+        working-directory: work
+        run: |
+          set -euxo pipefail
+          download() {
+            aria2c --max-connection-per-server=16 --split=16 \
+              --min-split-size=1M --file-allocation=none \
+              --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=10 --retry-wait=3 "$1" -o "$2"
+          }
+
+          download "${GSI_URL}" "${GSI_NAME}" & P1=$!
+          download "${STOCK_BASE_URL}/vendor.img" vendor.img & P2=$!
+          download "${STOCK_BASE_URL}/product.img" product.img & P3=$!
+          download "${STOCK_BASE_URL}/system_ext.img" system_ext.img & P4=$!
+          download "${KERNEL_URL}" A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar & P5=$!
+          download "${TAPLOCK_URL}" TapLock.apk & P6=$!
+          for pid in "$P1" "$P2" "$P3" "$P4" "$P5" "$P6"; do
+            wait "$pid"
+          done
+
+          echo "${GSI_SHA256}  ${GSI_NAME}" | sha256sum -c -
+          echo "${TAPLOCK_SHA256}  TapLock.apk" | sha256sum -c -
+          xz -t "${GSI_NAME}"
+          tar -tf A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar | grep -qx boot.img
+          test "$(aapt dump badging TapLock.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")" = com.ah.taplock
+
+      - name: Extract and minimize images
+        shell: bash
+        working-directory: work
+        run: |
+          set -euxo pipefail
+          xz -T0 -dc "${GSI_NAME}" > system.downloaded.img
+          rm -f "${GSI_NAME}"
+
+          normalize_image() {
+            local image="$1"
+            if file "$image" | grep -qi 'Android sparse image'; then
+              simg2img "$image" "${image}.raw"
+              mv "${image}.raw" "$image"
+            fi
+
+            if tune2fs -l "$image" >/dev/null 2>&1; then
+              set +e
+              e2fsck -fy "$image"
+              local rc=$?
+              set -e
+              test "$rc" -le 2
+              resize2fs -M "$image"
+              local blocks block_size
+              blocks=$(tune2fs -l "$image" | awk -F: '/Block count/ {gsub(/ /,"",$2); print $2}')
+              block_size=$(tune2fs -l "$image" | awk -F: '/Block size/ {gsub(/ /,"",$2); print $2}')
+              test -n "$blocks"
+              test -n "$block_size"
+              truncate -s "$((blocks * block_size))" "$image"
+            fi
+          }
+
+          normalize_image system.downloaded.img
+          mv system.downloaded.img system.img
+          normalize_image vendor.img
+          normalize_image product.img
+          normalize_image system_ext.img
+
+          file system.img vendor.img product.img system_ext.img
+          ls -lh system.img vendor.img product.img system_ext.img
+
+      - name: Preflight A03 super capacity
+        shell: bash
+        working-directory: work
+        run: |
+          set -euxo pipefail
+          SYSTEM_SIZE=$(stat -c%s system.img)
+          VENDOR_SIZE=$(stat -c%s vendor.img)
+          PRODUCT_SIZE=$(stat -c%s product.img)
+          EXT_SIZE=$(stat -c%s system_ext.img)
+          TOTAL=$((SYSTEM_SIZE + VENDOR_SIZE + PRODUCT_SIZE + EXT_SIZE))
+          LIMIT=6761218048
+          printf 'system=%s vendor=%s product=%s system_ext=%s total=%s limit=%s\n' \
+            "$SYSTEM_SIZE" "$VENDOR_SIZE" "$PRODUCT_SIZE" "$EXT_SIZE" "$TOTAL" "$LIMIT" \
+            | tee ../release/PARTITION-SIZES.txt
+          test "$TOTAL" -lt "$LIMIT"
+
+      - name: Build Odin super package
+        shell: bash
+        working-directory: work
+        run: |
+          set -euxo pipefail
+          SYSTEM_SIZE=$(stat -c%s system.img)
+          VENDOR_SIZE=$(stat -c%s vendor.img)
+          PRODUCT_SIZE=$(stat -c%s product.img)
+          EXT_SIZE=$(stat -c%s system_ext.img)
+
+          ../lptools/binary/lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:${SYSTEM_SIZE}:main --image system=system.img \
+            --partition vendor:readonly:${VENDOR_SIZE}:main --image vendor=vendor.img \
+            --partition product:readonly:${PRODUCT_SIZE}:main --image product=product.img \
+            --partition system_ext:readonly:${EXT_SIZE}:main --image system_ext=system_ext.img \
+            --sparse --output super.img
+
+          tar -cf super.tar super.img
+          7z a -mx=5 -mmt=on -v1900m \
+            ../release/Lunaris-3.12-A035F-BIT9-v4.5-Odin.7z super.tar
+          test -s ../release/Lunaris-3.12-A035F-BIT9-v4.5-Odin.7z.001
+
+      - name: Create release kit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp work/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar release/
+          cp work/TapLock.apk release/
+          cat > release/HUONG-DAN-LUNARIS-A03.txt <<'EOF'
+          LUNARIS-AOSP 3.12 ANDROID 16 - SAMSUNG GALAXY A03 SM-A035F BIT9
+
+          CO SAN:
+          - Lunaris 3.12 GApps: co CH Play va thanh am luong trong Quick Settings.
+          - Kernel v4.5 Safe: sua cam ung Jadard va double tap danh thuc.
+          - TapLock: double tap tai Home de tat man hinh; khong bat cu chi trong app/PIN.
+
+          FLASH SACH - SE XOA DU LIEU:
+          1. Tai tat ca cac phan .7z.001, .002... vao cung mot thu muc.
+          2. Mo file .001 bang 7-Zip, giai nen de lay super.tar.
+          3. Odin AP chon super.tar; KHONG Re-Partition; bam Start.
+          4. Vao recovery, factory reset/format data, sau do khoi dong ROM.
+          5. Vao Download Mode, Odin AP flash kernel v4.5 .tar, khoi dong lai.
+          6. Cai TapLock.apk, them widget TapLock vao Home va cap quyen Tro nang.
+
+          SAU KHI KHOI DONG:
+          - Treble Settings > Misc > bat Fix blank screen cho Unisoc neu man hinh loi.
+          - Double tap wake do kernel v4.5; double tap sleep do TapLock tai Home.
+          - Khong khoa lai bootloader. Giu san ROM LineageOS 20 va firmware goc de khoi phuc.
+
+          DAY LA BAN TEST. KHONG THE DAM BAO KHONG LOI TREN MAY THAT TRUOC KHI FLASH VA TEST.
+          EOF
+
+          sha256sum release/Lunaris-3.12-A035F-BIT9-v4.5-Odin.7z.* \
+            release/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar \
+            release/TapLock.apk > release/SHA256SUMS.txt
+          ls -lh release/
+
+      - name: Publish permanent test release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Lunaris 3.12 GApps A035F BIT9 + kernel v4.5 TEST
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Bản thử nghiệm cho Samsung Galaxy A03 SM-A035F BIT9/Jadard.
+
+            - Lunaris-AOSP 3.12 Android 16 GApps chính chủ: CH Play tích hợp.
+            - Thanh âm lượng ngay trong Quick Settings.
+            - Kernel v4.5 Safe đi kèm để sửa cảm ứng và DT2W.
+            - TapLock đi kèm để double-tap tắt màn hình tại Home.
+
+            Đây là GSI Android 16 nên có thể nặng hơn LineageOS 20. Không khóa lại bootloader.
+          files: |
+            release/Lunaris-3.12-A035F-BIT9-v4.5-Odin.7z.*
+            release/A03-touchfix-v4.5-Jadard-DT2W-Safe-KSUNext.tar
+            release/TapLock.apk
+            release/HUONG-DAN-LUNARIS-A03.txt
+            release/PARTITION-SIZES.txt
+            release/SHA256SUMS.txt
