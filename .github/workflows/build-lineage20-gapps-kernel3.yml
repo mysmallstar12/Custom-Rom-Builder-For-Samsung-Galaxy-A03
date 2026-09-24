@@ -1,0 +1,84 @@
+name: Build LineageOS 20 BiTGApps A03 Kernel 3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lineage20-bitgapps-a035f-bit9-kernel3
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: lineage20-bitgapps-a035f-bit9-kernel3
+  BASE_TAG: lineage20-bitgapps-a035f-bit9-v4.5-stable
+  KERNEL_TAG: a03-jadard-ksunext-kernel-v3-upload
+  KERNEL_FILE: A03-touchfix-v3-Jadard-KSUNext.tar
+  KERNEL_SHA256: b5dd59e40605318cdade6d4f8cc6355294e708ba65d5072a82f12d0dbbe242eb
+  BITGAPPS_NAME: BiTGApps-arm64-13.0.0-20260822-112657-CORE.zip
+  BITGAPPS_SHA256: 6f77efbd17fe43e35dfd9a271c903fee7776c3b131cf7c8ec5fd21ffcb67d4de
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Download the published v4.5 ROM and uploaded kernel 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download"
+          curl -fL --retry 5 --retry-all-errors --output LineageOS-20-A035F-BIT9-v4.5-StableKit.7z.001 +            "${base}/${BASE_TAG}/LineageOS-20-A035F-BIT9-v4.5-StableKit.7z.001"
+          curl -fL --retry 5 --retry-all-errors --output "${KERNEL_FILE}" +            "${base}/${KERNEL_TAG}/${KERNEL_FILE}"
+          curl -fL --retry 5 --retry-all-errors --output "${BITGAPPS_NAME}" +            "${base}/${BASE_TAG}/${BITGAPPS_NAME}"
+          echo "${KERNEL_SHA256}  ${KERNEL_FILE}" | sha256sum -c -
+          echo "${BITGAPPS_SHA256}  ${BITGAPPS_NAME}" | sha256sum -c -
+          test "$(tar -tf "${KERNEL_FILE}")" = boot.img
+          test -s LineageOS-20-A035F-BIT9-v4.5-StableKit.7z.001
+
+      - name: Write installation guide and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > HUONG-DAN-CAI-DAT.txt <<'EOF'
+          SAMSUNG GALAXY A03 SM-A035F BIT9 / JADARD
+          LINEAGEOS 20 ANDROID 13 + BITGAPPS CORE + KERNEL 3
+
+          1. Giai nen LineageOS-20-A035F-BIT9-v4.5-StableKit.7z.001 de lay super.tar.
+          2. Odin: nap super.tar vao AP; khong chon Re-Partition.
+          3. Vao recovery, format data / factory reset, sau do khoi dong ROM.
+          4. Vao Download Mode, nap A03-touchfix-v3-Jadard-KSUNext.tar vao AP.
+          5. Vao KernelSU Next > Module, cai BiTGApps Core ARM64 Android 13 ZIP,
+             sau do khoi dong lai de co CH Play.
+
+          Khong cai TapLock. Khong khoa lai bootloader. Sao luu du lieu truoc khi flash.
+          Chi dung cho SM-A035F BIT9 va panel Jadard; kernel 3 chua duoc kiem tra
+          tuong thich thuc te voi goi ROM nay. GApps la module cai sau, khong
+          duoc tich hop san trong super.img.
+          EOF
+          sha256sum LineageOS-20-A035F-BIT9-v4.5-StableKit.7z.001 +            "${KERNEL_FILE}" "${BITGAPPS_NAME}" > SHA256SUMS.txt
+
+      - name: Publish durable GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LineageOS 20 + BiTGApps + kernel 3 (A035F BIT9 Jadard)
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          body: |
+            LineageOS 20 Android 13 ROM from the existing v4.5 release, repackaged
+            with the exact uploaded kernel 3 and BiTGApps Core. No v4.5 kernel or
+            TapLock is included. BiTGApps is installed after flashing as a
+            KernelSU module; it is not preinstalled in super.img.
+
+            This kernel and ROM pairing has not yet been verified on a device.
+            Check the SHA-256 manifest and read HUONG-DAN-CAI-DAT.txt before use.
+            GitHub Release assets persist separately from temporary Actions artifacts.
+          files: |
+            LineageOS-20-A035F-BIT9-v4.5-StableKit.7z.001
+            A03-touchfix-v3-Jadard-KSUNext.tar
+            BiTGApps-arm64-13.0.0-20260822-112657-CORE.zip
+            HUONG-DAN-CAI-DAT.txt
+            SHA256SUMS.txt
