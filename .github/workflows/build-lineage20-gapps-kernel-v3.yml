@@ -1,0 +1,199 @@
+name: Build LineageOS 20 BiTGApps A03 Kernel v3
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_url:
+        description: Direct HTTPS URL of the uploaded kernel v3 tar
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lineage20-bitgapps-a035f-bit9-kernel-v3
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: lineage20-bitgapps-a035f-bit9-kernel-v3
+  GSI_URL: https://downloads.sourceforge.net/project/andyyan-gsi/lineage-20-td/lineage-20.0-20251021-UNOFFICIAL-arm64_bvN.img.gz
+  KERNEL_SHA256: b5dd59e40605318cdade6d4f8cc6355294e708ba65d5072a82f12d0dbbe242eb
+  BITGAPPS_NAME: BiTGApps-arm64-13.0.0-20260822-112657-CORE.zip
+  BITGAPPS_SHA256: 6f77efbd17fe43e35dfd9a271c903fee7776c3b131cf7c8ec5fd21ffcb67d4de
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 210
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify uploaded kernel before expensive downloads
+        shell: bash
+        env:
+          KERNEL_URL: ${{ inputs.kernel_url }}
+        run: |
+          set -euo pipefail
+          [[ "$KERNEL_URL" == https://* ]]
+          curl --fail --location --retry 3 --max-time 900 "$KERNEL_URL" \
+            --output A03-touchfix-v3-Jadard-KSUNext.tar
+          echo "${KERNEL_SHA256}  A03-touchfix-v3-Jadard-KSUNext.tar" | sha256sum -c -
+          test "$(tar -tf A03-touchfix-v3-Jadard-KSUNext.tar)" = boot.img
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            aria2 curl gzip p7zip-full file android-sdk-libsparse-utils unzip
+          git clone --depth=1 https://github.com/Exynos-nigg/lpunpack-lpmake-mirror.git lpbinary
+          cd lpbinary
+          bash install.sh
+
+      - name: Download vanilla LineageOS 20
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          download() {
+            aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+              --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=10 --retry-wait=3 "$1" -o "$2"
+          }
+          download "${GSI_URL}" system.img.gz
+
+          gzip -t system.img.gz
+          gunzip system.img.gz
+          test -s system.img
+
+      - name: Download and verify official BiTGApps Core for Android 13
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TOKEN_URL='https://build.bitgapps.io/download.php?action=token&m1=-arm64-&m2=-13.0.0-20260822-112657-CORE.zip'
+          TOKEN=$(curl --fail --silent --show-error --retry 5 --max-time 120 "$TOKEN_URL")
+          test -n "$TOKEN"
+          curl --fail --location --show-error --retry 5 --max-time 900 \
+            "https://build.bitgapps.io/download.php?d=${TOKEN}" \
+            --output "${BITGAPPS_NAME}"
+          echo "${BITGAPPS_SHA256}  ${BITGAPPS_NAME}" | sha256sum -c -
+          unzip -t "${BITGAPPS_NAME}"
+
+      - name: Download BIT9 stock partitions in parallel
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          download_partition() {
+            aria2c --max-connection-per-server=16 --split=16 --min-split-size=1M \
+              --file-allocation=none --allow-overwrite=true --auto-file-renaming=false \
+              --max-tries=10 --retry-wait=3 \
+              "https://downloads.sourceforge.net/project/a03-file/A035FXXS9CYG1/$1.img" \
+              -o "$1.img"
+          }
+          download_partition vendor & P1=$!
+          download_partition product & P2=$!
+          download_partition system_ext & P3=$!
+          wait "$P1" "$P2" "$P3"
+          test -s vendor.img
+          test -s product.img
+          test -s system_ext.img
+
+      - name: Verify image sizes and build Odin super
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SYSTEM_SIZE=$(stat -c%s system.img)
+          VENDOR_SIZE=$(stat -c%s vendor.img)
+          PRODUCT_SIZE=$(stat -c%s product.img)
+          EXT_SIZE=$(stat -c%s system_ext.img)
+          TOTAL=$((SYSTEM_SIZE + VENDOR_SIZE + PRODUCT_SIZE + EXT_SIZE))
+          test "$TOTAL" -lt 6761218048
+
+          ./lpmake \
+            --metadata-size 65536 \
+            --super-name super \
+            --metadata-slots 3 \
+            --device super:6763315200 \
+            --group main:6761218048 \
+            --partition system:readonly:${SYSTEM_SIZE}:main --image system=system.img \
+            --partition vendor:readonly:${VENDOR_SIZE}:main --image vendor=vendor.img \
+            --partition product:readonly:${PRODUCT_SIZE}:main --image product=product.img \
+            --partition system_ext:readonly:${EXT_SIZE}:main --image system_ext=system_ext.img \
+            --sparse --output super.img
+
+          tar -cf super.tar super.img
+          7z a -mx=7 -v1900m LineageOS-20-A035F-BIT9-Kernel-v3.7z super.tar
+          test -s LineageOS-20-A035F-BIT9-Kernel-v3.7z.001
+          rm -f super.img super.tar system.img vendor.img product.img system_ext.img
+
+      - name: Add verified kernel to release package
+        run: cp A03-touchfix-v3-Jadard-KSUNext.tar lpbinary/binary/
+
+      - name: Create Vietnamese installation guide and checksums
+        working-directory: lpbinary/binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > HUONG-DAN-CAI-DAT.txt <<'EOF'
+          SAMSUNG GALAXY A03 SM-A035F BIT9 - A035FXXS9CYG1
+          LINEAGEOS 20 ANDROID 13 + BITGAPPS CORE + KERNEL v3
+
+          BO TEP GOM CO:
+          - LineageOS 20 Android 13 Vanilla nhe, dong goi super.tar cho Odin.
+          - BiTGApps Core ARM64 Android 13: CH Play, Play Services va Google Services Framework.
+          - Kernel v3: sua cam ung Jadard va KernelSU Next.
+
+          FLASH ROM VA KERNEL:
+          1. Tai tat ca file .7z.001, .002... vao cung mot thu muc.
+          2. Mo file .7z.001 bang 7-Zip, giai nen ra super.tar.
+          3. Odin: chon super.tar tai AP; KHONG chon Re-Partition; bam Start.
+          4. Vao recovery, factory reset/format data; sau do khoi dong LineageOS.
+          5. Vao Download Mode, Odin AP flash A03-touchfix-v3-Jadard-KSUNext.tar.
+          6. Khoi dong lai ROM.
+
+          CAI CH PLAY DUNG GOI DA KIEM TRA:
+          7. Mo KernelSU Next > Module > Cai dat.
+          8. Chon BiTGApps-arm64-13.0.0-20260822-112657-CORE.zip.
+          9. Cho cai xong, bam khoi dong lai. Cho may on dinh 3-5 phut roi mo CH Play dang nhap.
+          10. Neu da tung cai mot goi GApps khac, go bo module cu va khoi dong lai truoc khi cai goi nay.
+
+          LUU Y:
+          - Chi dung cho SM-A035F BIT9 voi cam ung Jadard JD9365T.
+          - Khong khoa lai bootloader. Sao luu du lieu va firmware goc truoc khi flash.
+          - CH Play duoc dong goi kem dang module da xac minh, khong chen sua truc tiep system.img.
+          EOF
+
+          sha256sum LineageOS-20-A035F-BIT9-Kernel-v3.7z.* \
+            A03-touchfix-v3-Jadard-KSUNext.tar \
+            "${BITGAPPS_NAME}" > SHA256SUMS.txt
+
+      - name: Publish permanent GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LineageOS 20 Android 13 A035F BIT9 + GApps module + kernel v3
+          prerelease: false
+          fail_on_unmatched_files: true
+          body: |
+            Bộ ổn định, nhẹ cho Samsung Galaxy A03 SM-A035F BIT9/Jadard.
+
+            - LineageOS 20 Vanilla (Android 13), đóng gói Odin `super.tar`.
+            - BiTGApps Core ARM64 Android 13 chính xác, kèm trong Release và đã khóa SHA-256.
+            - Kernel v3 do người dùng cung cấp (SHA-256 đã khóa): Jadard touchfix và KernelSU Next.
+
+            Vì độ ổn định, CH Play được cung cấp dưới dạng module KernelSU đã xác minh thay vì sửa thẳng system image. Flash ROM/kernel, sau đó cài ZIP BiTGApps trong KernelSU và khởi động lại theo `HUONG-DAN-CAI-DAT.txt`.
+
+            Release được lưu trên GitHub cho đến khi chủ kho xóa. Hãy kiểm tra bản build và khả năng khởi động trên thiết bị trước khi sử dụng rộng rãi.
+          files: |
+            lpbinary/binary/LineageOS-20-A035F-BIT9-Kernel-v3.7z.*
+            lpbinary/binary/A03-touchfix-v3-Jadard-KSUNext.tar
+            lpbinary/binary/BiTGApps-arm64-13.0.0-20260822-112657-CORE.zip
+            lpbinary/binary/HUONG-DAN-CAI-DAT.txt
+            lpbinary/binary/SHA256SUMS.txt
